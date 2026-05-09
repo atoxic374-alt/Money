@@ -11,13 +11,13 @@ module.exports = {
     const buying = new ButtonBuilder()
       .setCustomId("SelectBots")
       .setLabel("شَراء.")
-      .setEmoji("1368430934180761730")
+      .setEmoji("🛒")
       .setStyle(ButtonStyle.Secondary);
 
     const renewal = new ButtonBuilder()
       .setCustomId("renewal")
       .setLabel("تجَديد.")
-      .setEmoji("1352113229803028551")
+      .setEmoji("🔄")
       .setStyle(ButtonStyle.Secondary);
 
     const row1 = new ActionRowBuilder().addComponents(buying, renewal);

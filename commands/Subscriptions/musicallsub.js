@@ -59,18 +59,18 @@ module.exports = {
       const generateButtons = () => {
         const previousButton = new ButtonBuilder()
           .setCustomId('previous')
-          .setEmoji("1251766205111468043")
+          .setEmoji("◀️")
           .setStyle('Secondary')
           .setDisabled(currentPage === 1);
 
         const deleteButton = new ButtonBuilder()
           .setCustomId('deleteButton')
-          .setEmoji("1240135421434925076")
+          .setEmoji("🗑️")
           .setStyle('Danger');
 
         const nextButton = new ButtonBuilder()
           .setCustomId('next')
-          .setEmoji("1251766110022537256")
+          .setEmoji("▶️")
           .setStyle('Secondary')
           .setDisabled(currentPage === totalPages);
 

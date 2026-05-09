@@ -24,6 +24,7 @@ const runningBots = new Collection();
 const tempData = new Collection();
 tempData.set("bots", []);
 const collection = new Collection();
+const artistTracksCache = new Collection();
 
 module.exports = {
     runsys: async function runBotSystem(token, idbot) {
@@ -625,29 +626,59 @@ module.exports = {
                 const row = new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
-                            .setCustomId('loop')
-                            .setEmoji('1222068127807045632')
-                            .setStyle(ButtonStyle.Secondary),
-                        new ButtonBuilder()
-                            .setCustomId('volume_up')
-                            .setEmoji('1222069466930876466')
+                            .setCustomId('stop')
+                            .setEmoji('⏹️')
                             .setStyle(ButtonStyle.Secondary),
                         new ButtonBuilder()
                             .setCustomId('pause')
-                            .setEmoji('1222069145433280602')
-                            .setStyle(ButtonStyle.Secondary),
-                        new ButtonBuilder()
-                            .setCustomId('volume_down')
-                            .setEmoji('1222068728057823332')
+                            .setEmoji('⏸️')
                             .setStyle(ButtonStyle.Secondary),
                         new ButtonBuilder()
                             .setCustomId('skip')
-                            .setEmoji('1222069661965877329')
+                            .setEmoji('⏭️')
                             .setStyle(ButtonStyle.Secondary),
-
-
+                        new ButtonBuilder()
+                            .setCustomId('loop')
+                            .setEmoji('🔁')
+                            .setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder()
+                            .setCustomId('volume_up')
+                            .setEmoji('🔊')
+                            .setStyle(ButtonStyle.Secondary),
                     );
                 return row;
+            }
+
+            async function applyFilter(player, filterType) {
+                try {
+                    switch (filterType) {
+                        case 'bassboost':
+                            await player.setEQ([
+                                { band: 0, gain: 0.6 }, { band: 1, gain: 0.7 },
+                                { band: 2, gain: 0.8 }, { band: 3, gain: 0.55 },
+                                { band: 4, gain: 0.25 }, { band: 5, gain: 0.0 },
+                            ]);
+                            break;
+                        case 'nightcore':
+                            await player.setTimescale({ speed: 1.2, pitch: 1.3, rate: 1 });
+                            break;
+                        case 'eightd':
+                            await player.setRotation({ rotationHz: 0.2 });
+                            break;
+                        case 'vaporwave':
+                            await player.setTimescale({ speed: 0.85, pitch: 0.8, rate: 1 });
+                            break;
+                        case 'karaoke':
+                            await player.setKaraoke({ level: 1.0, monoLevel: 1.0, filterBand: 220.0, filterWidth: 100.0 });
+                            break;
+                        case 'none':
+                        default:
+                            await player.clearFilters();
+                            break;
+                    }
+                } catch (e) {
+                    console.error('Filter error:', e.message);
+                }
             }
 
 
@@ -775,33 +806,79 @@ module.exports = {
                     if (!player.isPlaying && !player.isPaused) {
                         player.play();
                         const track = player.currentTrack;
+                        const artist = track.info.author || 'Unknown Artist';
+                        const dur = track.info.length;
+                        const tMin = Math.floor(dur / 60000);
+                        const tSec = Math.floor((dur % 60000) / 1000).toString().padStart(2, '0');
+                        const thumbnail = track.info.thumbnail || track.info.artworkUrl || null;
 
                         const embed = new EmbedBuilder()
                             .setColor(Colors)
-                            .setTitle("Playing Song")
-                            .setThumbnail('attachment://NowPlaying.png')
-                            .setDescription(`**[${track.info.title}](${track.info.uri})**`)
-                            .setFooter({
-                                text: `${message.author.displayName}`,
-                                iconURL: message.author.displayAvatarURL({ dynamic: true })
-                            })
-                            .addFields({
-                                name: "Song Duration",
-                                value: `**${new Date(track.info.length).toISOString().substr(11, 8)}**`,
-                                inline: true
+                            .setDescription(`### [${track.info.title}](${track.info.uri})\n⏱️ \`${tMin}:${tSec}\``)
+                            .setFooter({ text: `🎤 ${artist}` });
+
+                        if (thumbnail) embed.setThumbnail(thumbnail);
+
+                        const controlRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('stop').setEmoji('⏹️').setStyle(ButtonStyle.Secondary),
+                            new ButtonBuilder().setCustomId('pause').setEmoji('⏸️').setStyle(ButtonStyle.Secondary),
+                            new ButtonBuilder().setCustomId('skip').setEmoji('⏭️').setStyle(ButtonStyle.Secondary),
+                            new ButtonBuilder().setCustomId('loop').setEmoji('🔁').setStyle(ButtonStyle.Secondary),
+                            new ButtonBuilder().setCustomId('volume_up').setEmoji('🔊').setStyle(ButtonStyle.Secondary),
+                        );
+
+                        const filterRow = new ActionRowBuilder().addComponents(
+                            new StringSelectMenuBuilder()
+                                .setCustomId('music_filter')
+                                .setPlaceholder('🎛️ اختر فلتر للتشغيل')
+                                .addOptions([
+                                    { label: 'باس بوست', value: 'bassboost', emoji: '🎸', description: 'تضخيم الجهير' },
+                                    { label: 'نايت كور', value: 'nightcore', emoji: '🌙', description: 'سرعة عالية وحدة أعلى' },
+                                    { label: '8D صوت', value: 'eightd', emoji: '🎧', description: 'صوت ثلاثي الأبعاد' },
+                                    { label: 'فيبور ويف', value: 'vaporwave', emoji: '🌊', description: 'سرعة بطيئة وحدة أعمق' },
+                                    { label: 'كاراوكي', value: 'karaoke', emoji: '🎤', description: 'إزالة الصوت' },
+                                    { label: 'إيقاف الفلتر', value: 'none', emoji: '❌', description: 'إلغاء الفلتر الحالي' },
+                                ])
+                        );
+
+                        const replyComponents = [controlRow, filterRow];
+
+                        try {
+                            const artistRes = await TrueMusic.poru.resolve({
+                                query: `${artist} songs`,
+                                source: 'ytsearch'
                             });
+                            const artistTracks = artistRes?.tracks
+                                ?.filter(t => t.info.uri !== track.info.uri)
+                                ?.slice(0, 8) || [];
 
-                        const replyData = {
-                            embeds: [embed],
-                            content: `🎶 **${TrueMusic.user.displayName}**`,
-                            files: ['./settings/image/icons/NowPlaying.png']
-                        };
-
-                        if (tokenObj.buttons === 'on') {
-                            replyData.components = [createMusicControlButtons()];
+                            if (artistTracks.length > 0) {
+                                artistTracksCache.set(message.guild.id, artistTracks);
+                                const shortArtist = artist.length > 20 ? artist.slice(0, 17) + '...' : artist;
+                                const artistRow = new ActionRowBuilder().addComponents(
+                                    new StringSelectMenuBuilder()
+                                        .setCustomId('artist_songs')
+                                        .setPlaceholder(`🎵 أغاني مشهورة لـ ${shortArtist}`)
+                                        .addOptions(
+                                            artistTracks.map((t, i) => {
+                                                const aMin = Math.floor(t.info.length / 60000);
+                                                const aSec = Math.floor((t.info.length % 60000) / 1000).toString().padStart(2, '0');
+                                                return {
+                                                    label: t.info.title.length > 99 ? t.info.title.slice(0, 96) + '...' : t.info.title,
+                                                    value: i.toString(),
+                                                    description: `${aMin}:${aSec}`,
+                                                    emoji: '🎶'
+                                                };
+                                            })
+                                        )
+                                );
+                                replyComponents.push(artistRow);
+                            }
+                        } catch (e) {
+                            // artist search failed silently
                         }
 
-                        message.reply(replyData);
+                        message.reply({ embeds: [embed], components: replyComponents });
                     }
 
                 } catch (error) {
@@ -984,17 +1061,17 @@ module.exports = {
                     {
                         label: 'القائمة التالية',
                         value: 'next_page',
-                        emoji: '1251766110022537256'
+                        emoji: '▶️'
                     },
                     {
                         label: 'القائمة السابقه',
                         value: 'previous_page',
-                        emoji: '1251766205111468043'
+                        emoji: '◀️'
                     },
                     {
                         label: 'حذف قائمة التشغيل',
                         value: 'clear_queue',
-                        emoji: '1240135421434925076'
+                        emoji: '🗑️'
                     }
                 ];
 
@@ -1344,8 +1421,107 @@ module.exports = {
 
 
         TrueMusic.on('interactionCreate', async (interaction) => {
-            if (!interaction.isButton()) return;
+            if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
 
+            const memberVoice = interaction.member?.voice?.channel;
+            const clientVoice = interaction.guild.members?.me?.voice?.channel;
+            if (!memberVoice || !clientVoice || memberVoice.id !== clientVoice.id) return;
+
+            // ── Select Menus ──────────────────────────────────────────────
+            if (interaction.isStringSelectMenu()) {
+
+                // Filter menu
+                if (interaction.customId === 'music_filter') {
+                    const player = TrueMusic.poru.players.get(interaction.guildId);
+                    if (!player || !player.currentTrack) {
+                        return interaction.reply({ content: '*لا تشغيل حالياً.*', ephemeral: true });
+                    }
+                    await interaction.deferReply({ ephemeral: true });
+                    const filterType = interaction.values[0];
+                    const filterNames = {
+                        bassboost: '🎸 باس بوست',
+                        nightcore: '🌙 نايت كور',
+                        eightd: '🎧 8D صوت',
+                        vaporwave: '🌊 فيبور ويف',
+                        karaoke: '🎤 كاراوكي',
+                        none: '❌ بدون فلتر'
+                    };
+
+                    try {
+                        switch (filterType) {
+                            case 'bassboost':
+                                await player.setEQ([
+                                    { band: 0, gain: 0.6 }, { band: 1, gain: 0.7 },
+                                    { band: 2, gain: 0.8 }, { band: 3, gain: 0.55 },
+                                    { band: 4, gain: 0.25 }, { band: 5, gain: 0.0 },
+                                ]);
+                                break;
+                            case 'nightcore':
+                                await player.setTimescale({ speed: 1.2, pitch: 1.3, rate: 1 });
+                                break;
+                            case 'eightd':
+                                await player.setRotation({ rotationHz: 0.2 });
+                                break;
+                            case 'vaporwave':
+                                await player.setTimescale({ speed: 0.85, pitch: 0.8, rate: 1 });
+                                break;
+                            case 'karaoke':
+                                await player.setKaraoke({ level: 1.0, monoLevel: 1.0, filterBand: 220.0, filterWidth: 100.0 });
+                                break;
+                            case 'none':
+                            default:
+                                await player.clearFilters();
+                                break;
+                        }
+                        await interaction.editReply(`*تم تطبيق الفلتر:* **${filterNames[filterType] || filterType}**`);
+                    } catch (e) {
+                        await interaction.editReply('*حدث خطأ أثناء تطبيق الفلتر.*');
+                    }
+
+                    setTimeout(() => interaction.deleteReply().catch(() => {}), 8000);
+                    return;
+                }
+
+                // Artist songs menu
+                if (interaction.customId === 'artist_songs') {
+                    const player = TrueMusic.poru.players.get(interaction.guildId);
+                    if (!player) {
+                        return interaction.reply({ content: '*لا تشغيل حالياً.*', ephemeral: true });
+                    }
+                    await interaction.deferReply({ ephemeral: true });
+
+                    const tracks = artistTracksCache.get(interaction.guildId);
+                    if (!tracks) {
+                        await interaction.editReply('*انتهت صلاحية قائمة الأغاني، شغل أغنية جديدة.*');
+                        setTimeout(() => interaction.deleteReply().catch(() => {}), 8000);
+                        return;
+                    }
+
+                    const idx = parseInt(interaction.values[0]);
+                    const selectedTrack = tracks[idx];
+                    if (!selectedTrack) {
+                        await interaction.editReply('*لم يتم العثور على الأغنية.*');
+                        setTimeout(() => interaction.deleteReply().catch(() => {}), 8000);
+                        return;
+                    }
+
+                    selectedTrack.info.requester = interaction.user;
+                    player.queue.add(selectedTrack);
+
+                    const aMin = Math.floor(selectedTrack.info.length / 60000);
+                    const aSec = Math.floor((selectedTrack.info.length % 60000) / 1000).toString().padStart(2, '0');
+
+                    if (!player.isPlaying && !player.isPaused) player.play();
+
+                    await interaction.editReply(`*تمت الإضافة:* **${selectedTrack.info.title}** \`${aMin}:${aSec}\``);
+                    setTimeout(() => interaction.deleteReply().catch(() => {}), 8000);
+                    return;
+                }
+
+                return;
+            }
+
+            // ── Buttons ───────────────────────────────────────────────────
             const getPlayer = () => {
                 const player = TrueMusic.poru.players.get(interaction.guildId);
                 if (!player || !player.currentTrack) {
@@ -1354,10 +1530,6 @@ module.exports = {
                 }
                 return player;
             };
-
-            const memberVoice = interaction.member?.voice?.channel;
-            const clientVoice = interaction.guild.members?.me?.voice?.channel;
-            if (!memberVoice || !clientVoice || memberVoice.id !== clientVoice.id) return;
 
             if (!interaction.deferred && !interaction.replied) {
                 await interaction.deferReply({ ephemeral: true });
@@ -1368,22 +1540,31 @@ module.exports = {
 
             let responseMessage = '';
 
+            // Stop
+            if (interaction.customId === 'stop') {
+                player.setLoop('NONE');
+                player.queue.clear();
+                player.data.autoPlay = false;
+                await player.destroy();
+                responseMessage = '*تم إيقاف التشغيل.* ⏹️';
+            }
+
             // Loop toggle
             if (interaction.customId === 'loop') {
                 const currentLoop = player.loop;
                 const newLoopMode = currentLoop === 'NONE' ? 'TRACK' : 'NONE';
                 player.setLoop(newLoopMode);
-                responseMessage = `*Loop mode is now :* **${newLoopMode === 'TRACK' ? 'ON' : 'OFF'}**`;
+                responseMessage = `*وضع التكرار:* **${newLoopMode === 'TRACK' ? '🔁 ON' : '❌ OFF'}**`;
             }
 
             // Pause/Resume toggle
             if (interaction.customId === 'pause') {
                 if (player.isPaused) {
                     await player.pause(false);
-                    responseMessage = '*Resumed playing.*';
+                    responseMessage = '*▶️ استُؤنف التشغيل.*';
                 } else {
                     await player.pause(true);
-                    responseMessage = '*Paused playing.*';
+                    responseMessage = '*⏸️ تم الإيقاف المؤقت.*';
                 }
             }
 
@@ -1391,28 +1572,28 @@ module.exports = {
             if (interaction.customId === 'volume_down') {
                 const newVolume = Math.max(player.volume - 10, 0);
                 player.setVolume(newVolume);
-                responseMessage = `*Volume decreased to :* **${newVolume}%**`;
+                responseMessage = `*🔉 الصوت:* **${newVolume}%**`;
             }
 
             // Volume up
             if (interaction.customId === 'volume_up') {
                 const newVolume = Math.min(player.volume + 10, 130);
                 player.setVolume(newVolume);
-                responseMessage = `*Volume increased to :* **${newVolume}%**`;
+                responseMessage = `*🔊 الصوت:* **${newVolume}%**`;
             }
 
             // Skip
             if (interaction.customId === 'skip') {
                 const currentTrack = player.currentTrack;
                 if (!currentTrack) {
-                    responseMessage = '*No song to skip.*';
+                    responseMessage = '*لا توجد أغنية للتخطي.*';
                 } else if (player.queue.length === 0) {
                     await player.destroy();
-                    responseMessage = `*Skipped:* **${currentTrack.info.title}**`;
+                    responseMessage = `*⏭️ تم التخطي:* **${currentTrack.info.title}**`;
                 } else {
                     const skippedTrack = player.currentTrack;
                     await player.skip();
-                    responseMessage = `*Skipped:* **${skippedTrack.info.title}**`;
+                    responseMessage = `*⏭️ تم التخطي:* **${skippedTrack.info.title}**`;
                 }
             }
 

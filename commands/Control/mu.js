@@ -115,45 +115,45 @@ module.exports = {
                     .addOptions([
                         {
                             label: 'اشتراك',
-                            emoji: '1265309996292378756',
+                            emoji: '⏱️',
                             description: 'لعرض مُدة اشتراكك المتبقية',
                             value: 'musictime',
                         }, {
                             label: 'إعادة تشغيل',
-                            emoji: '1356528848237367326',
+                            emoji: '🔄',
                             description: 'إعادة تشغيل البوتات المملوكة لك جميعًا',
                             value: 'restart',
                         },
                         {
                             label: 'إدارة مظهر البوتات',
-                            emoji: '1256869689015926845',
+                            emoji: '🎨',
                             description: 'تغير مظهر واسماء جميع البوتات التي تمتكلها',
                             value: 'appearance',
                         }, {
                             label: 'إدارة السيرفرات',
-                            emoji: '1256869694967644231',
+                            emoji: '🖥️',
                             description: 'نقل سيرفر البوتات إلي سيرفر جديد',
                             value: 'updateServerId',
                         },
                         {
                             label: 'نقل ملكية البوتات',
-                            emoji: '1344186014448615435',
+                            emoji: '🔀',
                             description: 'نقل ملكية البوتات إلى مستخدم آخر',
                             value: 'transferOwnership',
                         },
                         {
                             label: 'تثبيت البوتات',
-                            emoji: '1344186548350095381',
+                            emoji: '📌',
                             description: 'تثبيت جميع البوتات التي تمتلكها اليوم مُحدد',
                             value: 'installBot',
                         }, {
                             label: 'روابط البوتات',
-                            emoji: '1256869691004162068',
+                            emoji: '🔗',
                             description: 'احصل علي روابك جميع برامج البوتات التي تمتكلها',
                             value: 'mylinks',
                         }, {
                             label: 'منصة التشغيل',
-                            emoji: '1344144928967757897',
+                            emoji: '🎵',
                             description: 'من أجل أختيار منصة التشغيل الاساسية لبدء التشغيل',
                             value: 'platform',
                         }
@@ -199,12 +199,12 @@ module.exports = {
                             .addOptions([
                                 {
                                     label: 'روابط',
-                                    emoji: '1264908026679136360',
+                                    emoji: '🔗',
                                     description: 'إرسال جميع روابط البوتات التي تمتكلها',
                                     value: 'allBotsLinks',
                                 }, {
                                     label: 'روابط خارج السيرفر',
-                                    emoji: '1264908028369702935',
+                                    emoji: '🌐',
                                     description: 'إرسال جميع روابط البوتات خارج سيرفرك',
                                     value: 'Off-serverlinks',
                                 }
@@ -434,29 +434,29 @@ module.exports = {
                             .addOptions([
                                 {
                                     label: 'تبديل الأزرار',
-                                    emoji: '1264914466852700211',
+                                    emoji: '🔘',
                                     description: 'تعطيل او تفعيل الأزرار',
                                     value: 'editbuttons',
                                 }, {
 
                                     label: 'تغير الحالة',
-                                    emoji: '1344209274951438398',
+                                    emoji: '💫',
                                     description: 'تغير حالة جميع بوتاتك',
                                     value: 'condition',
                                 },
                                 {
                                     label: 'تغير صور',
-                                    emoji: '1251777625509068871',
+                                    emoji: '👤',
                                     description: 'تغير صور جميع بوتاتك',
                                     value: 'editavatar',
                                 }, {
                                     label: 'تغير بنر',
-                                    emoji: '1258322362550718575',
+                                    emoji: '🖼️',
                                     description: 'تغير بنر جميع بوتاتك',
                                     value: 'editbanners',
                                 }, {
                                     label: 'تغير أسم',
-                                    emoji: '1251797972082229268',
+                                    emoji: '🏷️',
                                     description: 'تغير اسم جميع بوتاتك',
                                     value: 'editname',
                                 }
@@ -1316,12 +1316,12 @@ module.exports = {
                             .addOptions([
                                 {
                                     label: 'يوتيوب',
-                                    emoji: '1344143396893233152',
+                                    emoji: '🎵',
                                     description: 'من أجل تحديد منصة البحث والتشغيل الأساسية، يوتيوب',
                                     value: 'YouTube',
                                 }, {
                                     label: 'ساندكلاود',
-                                    emoji: '1344143819276292247',
+                                    emoji: '📺',
                                     description: 'من أجل تحديد منصة البحث والتشغيل الأساسية، ساندكلاود',
                                     value: 'SoundCloud',
                                 }
