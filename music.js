@@ -25,6 +25,7 @@ const tempData = new Collection();
 tempData.set("bots", []);
 const collection = new Collection();
 const artistTracksCache = new Collection();
+const nowPlayingMessages = new Collection();
 
 module.exports = {
     runsys: async function runBotSystem(token, idbot) {
@@ -530,6 +531,14 @@ module.exports = {
 
 
     TrueMusic.poru.on("queueEnd", async (player) => {
+      // clear now-playing interval & disable buttons
+      const stored = nowPlayingMessages.get(player.guildId);
+      if (stored) {
+        clearInterval(stored.intervalId);
+        try { await stored.message.edit({ components: [] }); } catch {}
+        nowPlayingMessages.delete(player.guildId);
+      }
+
       if (!player?.data?.autoPlay || player.data.autoPlay === false) {
         if (player.isPlaying) player.stop();
         player.queue.clear();
@@ -575,8 +584,86 @@ module.exports = {
 
 
 
-    TrueMusic.poru.on('trackStart', (player, track) => {
+    TrueMusic.poru.on('trackStart', async (player, track) => {
       player.data.lastTrack = track;
+
+      // skip first emit — play command already sends its own embed
+      if (player.data.skipFirstTrackStart) {
+        player.data.skipFirstTrackStart = false;
+        return;
+      }
+
+      // clear any old interval
+      const old = nowPlayingMessages.get(player.guildId);
+      if (old) { clearInterval(old.intervalId); nowPlayingMessages.delete(player.guildId); }
+
+      // send updated embed for skip / autoplay scenario
+      try {
+        const chId = typeof player.textChannel === 'string' ? player.textChannel : player.textChannel?.id;
+        const ch   = TrueMusic.channels.cache.get(chId);
+        if (!ch) return;
+
+        const [row1, row2] = (() => {
+          const r1 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('prev').setEmoji('⏮️').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('stop').setEmoji('⏹️').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('pause').setEmoji('⏸️').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('skip').setEmoji('⏭️').setStyle(ButtonStyle.Secondary),
+          );
+          const r2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('volume_down').setEmoji('🔉').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('loop').setEmoji('🔁').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('volume_up').setEmoji('🔊').setStyle(ButtonStyle.Secondary),
+          );
+          return [r1, r2];
+        })();
+
+        const filterRow = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('music_filter')
+            .setPlaceholder('🎛️ اختر فلتر للتشغيل')
+            .addOptions([
+              { label: 'باس بوست',     value: 'bassboost', emoji: '🎸', description: 'تضخيم الجهير' },
+              { label: 'نايت كور',     value: 'nightcore', emoji: '🌙', description: 'سرعة عالية وحدة أعلى' },
+              { label: '8D صوت',       value: 'eightd',    emoji: '🎧', description: 'صوت ثلاثي الأبعاد' },
+              { label: 'فيبور ويف',    value: 'vaporwave', emoji: '🌊', description: 'سرعة بطيئة وحدة أعمق' },
+              { label: 'كاراوكي',      value: 'karaoke',   emoji: '🎤', description: 'إزالة الصوت' },
+              { label: 'إيقاف الفلتر', value: 'none',      emoji: '❌', description: 'إلغاء الفلتر الحالي' },
+            ])
+        );
+
+        const artist  = track.info.author || 'Unknown Artist';
+        const totalMs = track.info.length  || 0;
+        const thumb   = track.info.thumbnail || track.info.artworkUrl || null;
+        const fmt = ms => `${Math.floor(ms/60000)}:${String(Math.floor((ms%60000)/1000)).padStart(2,'0')}`;
+        const bar = () => {
+          const p = TrueMusic.poru.players.get(player.guildId);
+          const cur = p?.position || 0;
+          const len = 17;
+          const pos = Math.min(Math.floor((cur / totalMs) * len), len - 1);
+          return '─'.repeat(pos) + '🔴' + '─'.repeat(len - 1 - pos);
+        };
+
+        const makeEmbed = (curMs = 0) => {
+          const e = new EmbedBuilder()
+            .setColor(Colors)
+            .setDescription(`### [${track.info.title}](${track.info.uri})\n\`${fmt(curMs)}\` ${bar()} \`${fmt(totalMs)}\``)
+            .setFooter({ text: `🎤  ${artist}` });
+          if (thumb) e.setThumbnail(thumb);
+          return e;
+        };
+
+        const sentMsg = await ch.send({ embeds: [makeEmbed(0)], components: [row1, row2, filterRow] });
+
+        const intervalId = setInterval(async () => {
+          const p = TrueMusic.poru.players.get(player.guildId);
+          if (!p || !p.currentTrack) { clearInterval(intervalId); nowPlayingMessages.delete(player.guildId); return; }
+          try { await sentMsg.edit({ embeds: [makeEmbed(p.position || 0)] }); }
+          catch { clearInterval(intervalId); nowPlayingMessages.delete(player.guildId); }
+        }, 15000);
+
+        nowPlayingMessages.set(player.guildId, { message: sentMsg, intervalId });
+      } catch { /* silent */ }
     });
 
 
@@ -679,6 +766,90 @@ module.exports = {
                 } catch (e) {
                     console.error('Filter error:', e.message);
                 }
+            }
+
+            function buildProgressBar(currentMs, totalMs, barLen = 17) {
+                if (!totalMs || totalMs <= 0) return '─'.repeat(barLen);
+                const pos = Math.min(Math.floor((currentMs / totalMs) * barLen), barLen - 1);
+                return '─'.repeat(pos) + '🔴' + '─'.repeat(barLen - 1 - pos);
+            }
+
+            function buildNowPlayingEmbed(track, currentMs) {
+                const artist  = track.info.author || 'Unknown Artist';
+                const totalMs = track.info.length  || 0;
+                const thumb   = track.info.thumbnail || track.info.artworkUrl || null;
+
+                const fmt = ms => {
+                    const m = String(Math.floor(ms / 60000));
+                    const s = String(Math.floor((ms % 60000) / 1000)).padStart(2, '0');
+                    return `${m}:${s}`;
+                };
+
+                const bar = buildProgressBar(currentMs, totalMs);
+
+                const embed = new EmbedBuilder()
+                    .setColor(Colors)
+                    .setDescription(
+                        `### [${track.info.title}](${track.info.uri})\n` +
+                        `\`${fmt(currentMs)}\` ${bar} \`${fmt(totalMs)}\``
+                    )
+                    .setFooter({ text: `🎤  ${artist}` });
+
+                if (thumb) embed.setThumbnail(thumb);
+                return embed;
+            }
+
+            function buildControlRows() {
+                const row1 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('prev').setEmoji('⏮️').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('stop').setEmoji('⏹️').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('pause').setEmoji('⏸️').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('skip').setEmoji('⏭️').setStyle(ButtonStyle.Secondary),
+                );
+                const row2 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('volume_down').setEmoji('🔉').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('loop').setEmoji('🔁').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('volume_up').setEmoji('🔊').setStyle(ButtonStyle.Secondary),
+                );
+                return [row1, row2];
+            }
+
+            function buildFilterRow() {
+                return new ActionRowBuilder().addComponents(
+                    new StringSelectMenuBuilder()
+                        .setCustomId('music_filter')
+                        .setPlaceholder('🎛️ اختر فلتر للتشغيل')
+                        .addOptions([
+                            { label: 'باس بوست',     value: 'bassboost', emoji: '🎸', description: 'تضخيم الجهير' },
+                            { label: 'نايت كور',     value: 'nightcore', emoji: '🌙', description: 'سرعة عالية وحدة أعلى' },
+                            { label: '8D صوت',       value: 'eightd',    emoji: '🎧', description: 'صوت ثلاثي الأبعاد' },
+                            { label: 'فيبور ويف',    value: 'vaporwave', emoji: '🌊', description: 'سرعة بطيئة وحدة أعمق' },
+                            { label: 'كاراوكي',      value: 'karaoke',   emoji: '🎤', description: 'إزالة الصوت' },
+                            { label: 'إيقاف الفلتر', value: 'none',      emoji: '❌', description: 'إلغاء الفلتر الحالي' },
+                        ])
+                );
+            }
+
+            function startNowPlayingInterval(guildId, sentMsg) {
+                const existing = nowPlayingMessages.get(guildId);
+                if (existing) clearInterval(existing.intervalId);
+
+                const intervalId = setInterval(async () => {
+                    const p = TrueMusic.poru.players.get(guildId);
+                    if (!p || !p.currentTrack) {
+                        clearInterval(intervalId);
+                        nowPlayingMessages.delete(guildId);
+                        return;
+                    }
+                    try {
+                        await sentMsg.edit({ embeds: [buildNowPlayingEmbed(p.currentTrack, p.position || 0)] });
+                    } catch {
+                        clearInterval(intervalId);
+                        nowPlayingMessages.delete(guildId);
+                    }
+                }, 15000);
+
+                nowPlayingMessages.set(guildId, { message: sentMsg, intervalId });
             }
 
 
@@ -804,81 +975,47 @@ module.exports = {
                     }
 
                     if (!player.isPlaying && !player.isPaused) {
+                        player.data.skipFirstTrackStart = true;
                         player.play();
-                        const track = player.currentTrack;
+                        const track  = player.currentTrack;
                         const artist = track.info.author || 'Unknown Artist';
-                        const dur = track.info.length;
-                        const tMin = Math.floor(dur / 60000);
-                        const tSec = Math.floor((dur % 60000) / 1000).toString().padStart(2, '0');
-                        const thumbnail = track.info.thumbnail || track.info.artworkUrl || null;
 
-                        const embed = new EmbedBuilder()
-                            .setColor(Colors)
-                            .setDescription(`### [${track.info.title}](${track.info.uri})\n⏱️ \`${tMin}:${tSec}\``)
-                            .setFooter({ text: `🎤 ${artist}` });
+                        const [row1, row2]  = buildControlRows();
+                        const filterRow     = buildFilterRow();
+                        const replyComponents = [row1, row2, filterRow];
 
-                        if (thumbnail) embed.setThumbnail(thumbnail);
-
-                        const controlRow = new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('stop').setEmoji('⏹️').setStyle(ButtonStyle.Secondary),
-                            new ButtonBuilder().setCustomId('pause').setEmoji('⏸️').setStyle(ButtonStyle.Secondary),
-                            new ButtonBuilder().setCustomId('skip').setEmoji('⏭️').setStyle(ButtonStyle.Secondary),
-                            new ButtonBuilder().setCustomId('loop').setEmoji('🔁').setStyle(ButtonStyle.Secondary),
-                            new ButtonBuilder().setCustomId('volume_up').setEmoji('🔊').setStyle(ButtonStyle.Secondary),
-                        );
-
-                        const filterRow = new ActionRowBuilder().addComponents(
-                            new StringSelectMenuBuilder()
-                                .setCustomId('music_filter')
-                                .setPlaceholder('🎛️ اختر فلتر للتشغيل')
-                                .addOptions([
-                                    { label: 'باس بوست', value: 'bassboost', emoji: '🎸', description: 'تضخيم الجهير' },
-                                    { label: 'نايت كور', value: 'nightcore', emoji: '🌙', description: 'سرعة عالية وحدة أعلى' },
-                                    { label: '8D صوت', value: 'eightd', emoji: '🎧', description: 'صوت ثلاثي الأبعاد' },
-                                    { label: 'فيبور ويف', value: 'vaporwave', emoji: '🌊', description: 'سرعة بطيئة وحدة أعمق' },
-                                    { label: 'كاراوكي', value: 'karaoke', emoji: '🎤', description: 'إزالة الصوت' },
-                                    { label: 'إيقاف الفلتر', value: 'none', emoji: '❌', description: 'إلغاء الفلتر الحالي' },
-                                ])
-                        );
-
-                        const replyComponents = [controlRow, filterRow];
-
+                        // fetch artist popular songs
                         try {
-                            const artistRes = await TrueMusic.poru.resolve({
-                                query: `${artist} songs`,
-                                source: 'ytsearch'
-                            });
-                            const artistTracks = artistRes?.tracks
-                                ?.filter(t => t.info.uri !== track.info.uri)
-                                ?.slice(0, 8) || [];
-
+                            const artistRes   = await TrueMusic.poru.resolve({ query: `${artist} songs`, source: 'ytsearch' });
+                            const artistTracks = artistRes?.tracks?.filter(t => t.info.uri !== track.info.uri)?.slice(0, 8) || [];
                             if (artistTracks.length > 0) {
                                 artistTracksCache.set(message.guild.id, artistTracks);
                                 const shortArtist = artist.length > 20 ? artist.slice(0, 17) + '...' : artist;
-                                const artistRow = new ActionRowBuilder().addComponents(
+                                const artistRow   = new ActionRowBuilder().addComponents(
                                     new StringSelectMenuBuilder()
                                         .setCustomId('artist_songs')
                                         .setPlaceholder(`🎵 أغاني مشهورة لـ ${shortArtist}`)
-                                        .addOptions(
-                                            artistTracks.map((t, i) => {
-                                                const aMin = Math.floor(t.info.length / 60000);
-                                                const aSec = Math.floor((t.info.length % 60000) / 1000).toString().padStart(2, '0');
-                                                return {
-                                                    label: t.info.title.length > 99 ? t.info.title.slice(0, 96) + '...' : t.info.title,
-                                                    value: i.toString(),
-                                                    description: `${aMin}:${aSec}`,
-                                                    emoji: '🎶'
-                                                };
-                                            })
-                                        )
+                                        .addOptions(artistTracks.map((t, i) => {
+                                            const m = String(Math.floor(t.info.length / 60000));
+                                            const s = String(Math.floor((t.info.length % 60000) / 1000)).padStart(2, '0');
+                                            return {
+                                                label: t.info.title.length > 99 ? t.info.title.slice(0, 96) + '...' : t.info.title,
+                                                value: i.toString(),
+                                                description: `${m}:${s}`,
+                                                emoji: '🎶'
+                                            };
+                                        }))
                                 );
                                 replyComponents.push(artistRow);
                             }
-                        } catch (e) {
-                            // artist search failed silently
-                        }
+                        } catch { /* silent */ }
 
-                        message.reply({ embeds: [embed], components: replyComponents });
+                        const sentMsg = await message.reply({
+                            embeds: [buildNowPlayingEmbed(track, 0)],
+                            components: replyComponents
+                        });
+
+                        startNowPlayingInterval(message.guild.id, sentMsg);
                     }
 
                 } catch (error) {
@@ -1525,7 +1662,7 @@ module.exports = {
             const getPlayer = () => {
                 const player = TrueMusic.poru.players.get(interaction.guildId);
                 if (!player || !player.currentTrack) {
-                    interaction.reply({ content: '*No music is currently playing.*', ephemeral: true });
+                    interaction.reply({ content: '*لا تشغيل حالياً.*', ephemeral: true });
                     return null;
                 }
                 return player;
@@ -1540,13 +1677,32 @@ module.exports = {
 
             let responseMessage = '';
 
+            // Previous — restart current track or play lastTrack
+            if (interaction.customId === 'prev') {
+                const restartTrack = player.data.lastTrack || player.currentTrack;
+                if (restartTrack) {
+                    restartTrack.info.requester = interaction.user;
+                    player.queue.unshift(restartTrack);
+                    await player.skip();
+                    responseMessage = `*⏮️ إعادة تشغيل:* **${restartTrack.info.title}**`;
+                } else {
+                    responseMessage = '*لا توجد أغنية سابقة.*';
+                }
+            }
+
             // Stop
             if (interaction.customId === 'stop') {
+                const stored = nowPlayingMessages.get(interaction.guildId);
+                if (stored) {
+                    clearInterval(stored.intervalId);
+                    try { await stored.message.edit({ components: [] }); } catch {}
+                    nowPlayingMessages.delete(interaction.guildId);
+                }
                 player.setLoop('NONE');
                 player.queue.clear();
                 player.data.autoPlay = false;
                 await player.destroy();
-                responseMessage = '*تم إيقاف التشغيل.* ⏹️';
+                responseMessage = '*⏹️ تم إيقاف التشغيل.*';
             }
 
             // Loop toggle
