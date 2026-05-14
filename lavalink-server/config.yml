@@ -1,0 +1,35 @@
+server:
+  port: 3000
+  address: 0.0.0.0
+
+lavalink:
+  server:
+    password: "youshallnotpass"
+    sources:
+      youtube: true
+      soundcloud: true
+      spotify: true
+      deezer: true
+      applemusic: true
+      http: true
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+
+plugins:
+  youtube:
+    # anti-ban: rotate user agents, use cookies
+    useOAuth2: false
+    cookies: ""
+    poToken: ""
+    visitorData: ""
+
+  spotify:
+    clientId: ""
+    clientSecret: ""
+    # If no credentials, resolves via YouTube search
+
+  soundcloud:
+    clientId: ""
+
+logging:
+  level: INFO
