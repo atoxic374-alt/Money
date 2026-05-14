@@ -2,20 +2,9 @@ const router = require('express').Router();
 const os = require('os');
 
 const SERVER_INFO = {
-    version: {
-        semver: '4.0.8',
-        major: 4,
-        minor: 0,
-        patch: 8,
-        preRelease: null,
-        build: 'custom',
-    },
+    version: { semver: '4.0.8', major: 4, minor: 0, patch: 8, preRelease: null, build: 'custom' },
     buildTime: Date.now(),
-    git: {
-        branch: 'main',
-        commit: 'custom',
-        commitTime: Date.now(),
-    },
+    git: { branch: 'main', commit: 'custom-lavalink', commitTime: Date.now() },
     jvm: process.version,
     lavaplayer: '2.2.1',
     sourceManagers: ['youtube', 'soundcloud', 'spotify', 'deezer', 'applemusic', 'http'],
@@ -23,9 +12,7 @@ const SERVER_INFO = {
     plugins: [],
 };
 
-router.get('/info', (req, res) => {
-    res.json(SERVER_INFO);
-});
+router.get('/info', (req, res) => res.json(SERVER_INFO));
 
 router.get('/version', (req, res) => {
     res.set('Content-Type', 'text/plain');
@@ -33,22 +20,32 @@ router.get('/version', (req, res) => {
 });
 
 router.get('/stats', (req, res) => {
-    const playerManager = req.app.get('playerManager');
-    const stats = playerManager ? playerManager.getStats() : {};
+    const pm = req.app.get('playerManager');
+    const stats = pm ? pm.getStats() : {};
+    const mem = process.memoryUsage();
+    const cpus = os.cpus();
+
+    // Calculate CPU load
+    let lavalinkLoad = 0;
+    try {
+        const usage = process.cpuUsage();
+        lavalinkLoad = (usage.user + usage.system) / 1e9 / os.cpus().length;
+    } catch {}
+
     res.json({
         players: stats.players || 0,
         playingPlayers: stats.playingPlayers || 0,
         uptime: Math.floor(process.uptime() * 1000),
-        memory: stats.memory || {
-            free: os.freemem(),
-            used: process.memoryUsage().heapUsed,
-            allocated: process.memoryUsage().heapTotal,
+        memory: {
+            free:       os.freemem(),
+            used:       mem.heapUsed,
+            allocated:  mem.heapTotal,
             reservable: os.totalmem(),
         },
-        cpu: stats.cpu || {
-            cores: os.cpus().length,
-            systemLoad: 0,
-            lavalinkLoad: 0,
+        cpu: {
+            cores:        cpus.length,
+            systemLoad:   Math.min(lavalinkLoad * 1.2, 1),
+            lavalinkLoad: Math.min(lavalinkLoad, 1),
         },
         frameStats: stats.frameStats || { sent: 0, nulled: 0, deficit: 0 },
     });

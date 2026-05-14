@@ -1,84 +1,124 @@
+/**
+ * Deezer source resolver
+ * Uses the public Deezer API (no auth needed for metadata) → resolves to YouTube
+ */
 const axios = require('axios');
 const logger = require('../utils/logger');
 const youtube = require('./youtube');
 
-const DEEZER_API = 'https://api.deezer.com';
+const API = 'https://api.deezer.com';
+const cache = new Map();
+const CACHE_TTL = 15 * 60 * 1000;
 
-function isDeezerUrl(url) {
-    return /deezer\.com/.test(url);
+function getCached(k) {
+    const h = cache.get(k);
+    if (!h) return null;
+    if (Date.now() - h.ts > CACHE_TTL) { cache.delete(k); return null; }
+    return h.data;
+}
+function setCached(k, d) { cache.set(k, { data: d, ts: Date.now() }); }
+
+function isDeezerUrl(url) { return /deezer\.com/.test(url); }
+
+function parseUrl(url) {
+    const m = url.match(/deezer\.com\/(?:[a-z]+\/)?(track|album|playlist|artist)\/(\d+)/);
+    return m ? { type: m[1], id: m[2] } : null;
 }
 
-function extractDeezerInfo(url) {
-    const trackMatch = url.match(/deezer\.com\/.+\/track\/(\d+)/);
-    const albumMatch = url.match(/deezer\.com\/.+\/album\/(\d+)/);
-    const playlistMatch = url.match(/deezer\.com\/.+\/playlist\/(\d+)/);
-    const artistMatch = url.match(/deezer\.com\/.+\/artist\/(\d+)/);
-
-    if (trackMatch) return { type: 'track', id: trackMatch[1] };
-    if (albumMatch) return { type: 'album', id: albumMatch[1] };
-    if (playlistMatch) return { type: 'playlist', id: playlistMatch[1] };
-    if (artistMatch) return { type: 'artist', id: artistMatch[1] };
-    return null;
+async function deezerGet(path) {
+    const r = await axios.get(`${API}${path}`, {
+        timeout: 10000,
+        headers: { 'Accept': 'application/json' },
+    });
+    if (r.data.error) throw new Error(`Deezer API error: ${r.data.error.message}`);
+    return r.data;
 }
 
-async function resolve(identifier) {
-    const info = extractDeezerInfo(identifier);
-    if (!info) return null;
+async function resolveTrack(track) {
+    if (!track) return null;
+    const cacheKey = `dz:track:${track.id}`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
 
+    const artist = track.artist?.name || '';
+    const query = `${track.title} ${artist}`;
     try {
-        if (info.type === 'track') {
-            const res = await axios.get(`${DEEZER_API}/track/${info.id}`);
-            return { type: 'track', tracks: [await resolveDeezerTrackToYT(res.data)] };
-        }
-
-        if (info.type === 'album') {
-            const [albumRes, tracksRes] = await Promise.all([
-                axios.get(`${DEEZER_API}/album/${info.id}`),
-                axios.get(`${DEEZER_API}/album/${info.id}/tracks?limit=50`),
-            ]);
-            const tracks = await Promise.all(tracksRes.data.data.map(t => resolveDeezerTrackToYT(t)));
-            return { type: 'playlist', tracks: tracks.filter(Boolean), name: albumRes.data.title };
-        }
-
-        if (info.type === 'playlist') {
-            const res = await axios.get(`${DEEZER_API}/playlist/${info.id}/tracks?limit=100`);
-            const tracks = await Promise.all(res.data.data.map(t => resolveDeezerTrackToYT(t)));
-            const plRes = await axios.get(`${DEEZER_API}/playlist/${info.id}`);
-            return { type: 'playlist', tracks: tracks.filter(Boolean), name: plRes.data.title };
-        }
-
-        if (info.type === 'artist') {
-            const [artistRes, topRes] = await Promise.all([
-                axios.get(`${DEEZER_API}/artist/${info.id}`),
-                axios.get(`${DEEZER_API}/artist/${info.id}/top?limit=10`),
-            ]);
-            const tracks = await Promise.all(topRes.data.data.map(t => resolveDeezerTrackToYT(t)));
-            return { type: 'playlist', tracks: tracks.filter(Boolean), name: `${artistRes.data.name} - Top Tracks` };
-        }
-    } catch (e) {
-        logger.error('[Deezer] resolve error:', e.message);
-    }
-    return null;
-}
-
-async function resolveDeezerTrackToYT(track) {
-    try {
-        const artist = track.artist?.name || '';
-        const query = `${track.title} ${artist}`;
         const results = await youtube.search(query, { limit: 1 });
-        if (!results || results.length === 0) return null;
-        const ytTrack = results[0];
-        return {
-            ...ytTrack,
-            title: track.title || ytTrack.title,
-            author: artist || ytTrack.author,
-            length: track.duration ? track.duration * 1000 : ytTrack.length,
-            artworkUrl: track.album?.cover_xl || track.album?.cover_big || ytTrack.artworkUrl,
+        if (!results?.length) return null;
+        const yt = results[0];
+        const resolved = {
+            ...yt,
+            title: track.title || yt.title,
+            author: artist || yt.author,
+            length: track.duration ? track.duration * 1000 : yt.length,
+            artworkUrl: track.album?.cover_xl || track.album?.cover_big || yt.artworkUrl,
             isrc: track.isrc || null,
             sourceName: 'deezer',
         };
+        setCached(cacheKey, resolved);
+        return resolved;
     } catch (e) {
-        logger.warn('[Deezer] resolveTrackToYT error:', e.message);
+        logger.warn(`[Deezer] resolveTrack failed: ${e.message}`);
+        return null;
+    }
+}
+
+async function resolveBatch(tracks, concurrency = 3) {
+    const results = [];
+    for (let i = 0; i < tracks.length; i += concurrency) {
+        const batch = tracks.slice(i, i + concurrency);
+        const resolved = await Promise.all(batch.map(t => resolveTrack(t)));
+        results.push(...resolved.filter(Boolean));
+    }
+    return results;
+}
+
+async function resolve(identifier) {
+    const info = parseUrl(identifier);
+    if (!info) return null;
+
+    const cacheKey = `dz:${info.type}:${info.id}`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+
+    try {
+        let result;
+
+        if (info.type === 'track') {
+            const track = await deezerGet(`/track/${info.id}`);
+            const resolved = await resolveTrack(track);
+            result = resolved ? { type: 'track', tracks: [resolved] } : null;
+        }
+
+        else if (info.type === 'album') {
+            const [album, tracksData] = await Promise.all([
+                deezerGet(`/album/${info.id}`),
+                deezerGet(`/album/${info.id}/tracks?limit=50`),
+            ]);
+            const tracks = await resolveBatch(tracksData.data.map(t => ({ ...t, album })));
+            result = { type: 'playlist', tracks, name: album.title };
+        }
+
+        else if (info.type === 'playlist') {
+            const pl = await deezerGet(`/playlist/${info.id}`);
+            const tracksData = await deezerGet(`/playlist/${info.id}/tracks?limit=100`);
+            const tracks = await resolveBatch(tracksData.data);
+            result = { type: 'playlist', tracks, name: pl.title };
+        }
+
+        else if (info.type === 'artist') {
+            const [artist, topData] = await Promise.all([
+                deezerGet(`/artist/${info.id}`),
+                deezerGet(`/artist/${info.id}/top?limit=10`),
+            ]);
+            const tracks = await resolveBatch(topData.data);
+            result = { type: 'playlist', tracks, name: `${artist.name} — Top Tracks` };
+        }
+
+        if (result) setCached(cacheKey, result);
+        return result;
+    } catch (e) {
+        logger.error(`[Deezer] resolve error (${info.type}:${info.id}): ${e.message}`);
         return null;
     }
 }

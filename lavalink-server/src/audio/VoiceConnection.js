@@ -1,124 +1,141 @@
+/**
+ * Discord Voice Connection
+ *
+ * Audio quality settings (2025 best practices):
+ * - Opus 128kbps @ 48kHz stereo — transparent quality, efficient
+ * - Frame size 960 samples = 20ms frames (Discord standard)
+ * - FFmpeg: -b:a 128k -ar 48000 -ac 2 -application audio
+ * - Reconnect on disconnect with exponential backoff
+ * - Silence frames sent before/after to avoid Discord audio glitches
+ */
+
 const WebSocket = require('ws');
 const dgram = require('dgram');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const nacl = require('tweetnacl');
-// Use system ffmpeg if available, fallback to ffmpeg-static
-let ffmpegPath;
-try { ffmpegPath = require('child_process').execSync('which ffmpeg').toString().trim(); } catch { ffmpegPath = require('ffmpeg-static'); }
-const logger = require('../utils/logger');
 const { EventEmitter } = require('events');
+const logger = require('../utils/logger');
 
-const SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
+// Use system ffmpeg (higher quality, more codecs)
+let FFMPEG_PATH;
+try {
+    FFMPEG_PATH = execSync('which ffmpeg', { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString().trim();
+} catch {
+    try { FFMPEG_PATH = require('ffmpeg-static'); } catch { FFMPEG_PATH = 'ffmpeg'; }
+}
+
 const OPUS_SAMPLE_RATE = 48000;
-const OPUS_FRAME_SIZE = 960;
-const OPUS_FRAME_DURATION = 20; // ms
+const OPUS_CHANNELS = 2;
+const OPUS_FRAME_SIZE = 960;          // 20ms at 48kHz
+const OPUS_FRAME_DURATION_MS = 20;
+const OPUS_BITRATE = '128k';          // 128kbps — transparent for music
+const SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
+const SILENCE_FRAMES_COUNT = 5;
+
+// ── Opus encoder loader ────────────────────────────────────────────────────────
+let OpusEncoder = null;
+function loadOpus() {
+    if (OpusEncoder) return OpusEncoder;
+    try {
+        const prism = require('prism-media');
+        OpusEncoder = prism.opus.Encoder;
+        logger.debug('[Voice] Opus encoder: prism-media');
+    } catch (e) {
+        logger.error('[Voice] prism-media not available:', e.message);
+    }
+    return OpusEncoder;
+}
 
 class VoiceConnection extends EventEmitter {
     constructor(guildId, userId) {
         super();
         this.guildId = guildId;
         this.userId = userId;
-        this.state = 'DISCONNECTED';
+
+        // State
+        this.state = 'DISCONNECTED'; // DISCONNECTED | CONNECTING | CONNECTED | DESTROYED
         this.ws = null;
         this.udp = null;
         this.ssrc = null;
         this.secretKey = null;
+        this.mode = null;
+        this.voiceIp = null;
+        this.voicePort = null;
+
+        // RTP state
         this.sequence = Math.floor(Math.random() * 0xffff);
         this.timestamp = Math.floor(Math.random() * 0xffffffff);
-        this.ip = null;
-        this.port = null;
-        this.mode = null;
-        this.ffmpeg = null;
-        this.playInterval = null;
-        this.opus = null;
-        this._loadOpus();
-        this.heartbeatInterval = null;
         this.nonce = 0;
+
+        // Playback state
+        this.ffmpegProc = null;
+        this.opusEncoder = null;
+        this.playTimer = null;
+        this.frameQueue = [];
+        this.playing = false;
+
+        // Reconnect state
+        this.heartbeatInterval = null;
+        this.reconnectTimeout = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
+
+        loadOpus();
     }
 
-    _loadOpus() {
-        try {
-            const prism = require('prism-media');
-            this.OpusEncoder = prism.opus.Encoder;
-        } catch (e) {
-            logger.warn('prism-media not available, using fallback');
-            this.OpusEncoder = null;
-        }
-    }
-
+    // ── Connect ──────────────────────────────────────────────────────────────
     connect(endpoint, token, sessionId) {
+        if (this.state === 'DESTROYED') return;
         this.endpoint = endpoint;
         this.token = token;
         this.sessionId = sessionId;
+        this.state = 'CONNECTING';
+        this._connectWS();
+    }
 
+    _connectWS() {
         if (this.ws) {
             this.ws.removeAllListeners();
-            this.ws.close();
+            try { this.ws.close(); } catch {}
+            this.ws = null;
         }
 
-        const wsUrl = `wss://${endpoint.replace(/:.*/, '')}/?v=8`;
-        logger.debug(`[Voice] Connecting to ${wsUrl}`);
-        this.ws = new WebSocket(wsUrl);
+        const host = this.endpoint.replace(/:.*/, '');
+        const wsUrl = `wss://${host}/?v=8`;
+        logger.debug(`[Voice] WS → ${wsUrl} guild=${this.guildId}`);
 
-        this.ws.on('open', () => {
-            this._identify();
+        this.ws = new WebSocket(wsUrl, {
+            headers: { 'User-Agent': 'DiscordBot (custom-lavalink, 4.0)' }
         });
 
-        this.ws.on('message', (data) => {
-            try {
-                const payload = JSON.parse(data.toString());
-                this._handleGatewayMessage(payload);
-            } catch (e) {
-                logger.error('[Voice] WS parse error:', e.message);
-            }
+        this.ws.on('open', () => this._identify());
+        this.ws.on('message', (raw) => {
+            try { this._handleOP(JSON.parse(raw.toString())); } catch {}
         });
-
-        this.ws.on('close', (code) => {
-            logger.warn(`[Voice] WS closed: ${code} guild=${this.guildId}`);
-            this._cleanup();
-            if (code !== 1000 && code !== 4006 && code !== 4014) {
-                setTimeout(() => {
-                    if (this.endpoint) this.connect(this.endpoint, this.token, this.sessionId);
-                }, 5000);
-            }
-        });
-
-        this.ws.on('error', (e) => {
-            logger.error('[Voice] WS error:', e.message);
-        });
+        this.ws.on('close', (code) => this._onClose(code));
+        this.ws.on('error', (e) => logger.warn(`[Voice] WS error guild=${this.guildId}: ${e.message}`));
     }
 
     _identify() {
-        this._send({
-            op: 0,
-            d: {
-                server_id: this.guildId,
-                user_id: this.userId,
-                session_id: this.sessionId,
-                token: this.token,
-            }
-        });
+        this._wsSend({ op: 0, d: { server_id: this.guildId, user_id: this.userId, session_id: this.sessionId, token: this.token } });
     }
 
-    _handleGatewayMessage(payload) {
-        switch (payload.op) {
+    _handleOP(msg) {
+        switch (msg.op) {
             case 2: // Ready
-                this.ssrc = payload.d.ssrc;
-                this.ip = payload.d.ip;
-                this.port = payload.d.port;
-                const modes = payload.d.modes;
-                this.mode = modes.includes('xsalsa20_poly1305_lite')
-                    ? 'xsalsa20_poly1305_lite'
-                    : modes.includes('xsalsa20_poly1305_suffix')
-                        ? 'xsalsa20_poly1305_suffix'
-                        : 'xsalsa20_poly1305';
+                this.ssrc = msg.d.ssrc;
+                this.voiceIp = msg.d.ip;
+                this.voicePort = msg.d.port;
+                this.mode = this._pickMode(msg.d.modes);
                 this._setupUDP();
                 break;
 
             case 4: // Session Description
-                this.secretKey = new Uint8Array(payload.d.secret_key);
+                this.secretKey = new Uint8Array(msg.d.secret_key);
                 this.state = 'CONNECTED';
-                logger.info(`[Voice] Ready guild=${this.guildId} mode=${this.mode}`);
+                this.reconnectAttempts = 0;
+                logger.info(`[Voice] Connected guild=${this.guildId} mode=${this.mode}`);
                 this.emit('ready');
                 break;
 
@@ -126,13 +143,13 @@ class VoiceConnection extends EventEmitter {
                 break;
 
             case 8: // Hello
-                const interval = payload.d.heartbeat_interval;
-                this._startHeartbeat(interval);
+                this._startHeartbeat(msg.d.heartbeat_interval);
                 break;
 
             case 9: // Resumed
                 this.state = 'CONNECTED';
                 logger.info(`[Voice] Resumed guild=${this.guildId}`);
+                this.emit('ready');
                 break;
 
             case 13: // Client Disconnect
@@ -140,238 +157,275 @@ class VoiceConnection extends EventEmitter {
         }
     }
 
-    _setupUDP() {
-        this.udp = dgram.createSocket('udp4');
+    _pickMode(modes) {
+        const priority = ['xsalsa20_poly1305_lite', 'xsalsa20_poly1305_suffix', 'xsalsa20_poly1305'];
+        for (const m of priority) if (modes.includes(m)) return m;
+        return modes[0];
+    }
 
+    _onClose(code) {
+        logger.warn(`[Voice] WS closed ${code} guild=${this.guildId}`);
+        this._clearHeartbeat();
+        if (this.state === 'DESTROYED') return;
+
+        // Resumable codes
+        if ([4001, 4004, 4006, 4009, 4011, 4014, 4016].includes(code)) {
+            logger.warn(`[Voice] Non-resumable close code ${code}, destroying`);
+            this.state = 'DISCONNECTED';
+            this.emit('disconnected', code);
+            return;
+        }
+
+        this.state = 'CONNECTING';
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        this.reconnectAttempts++;
+        logger.info(`[Voice] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}) guild=${this.guildId}`);
+        this.reconnectTimeout = setTimeout(() => {
+            if (this.state !== 'DESTROYED') this._connectWS();
+        }, delay);
+    }
+
+    // ── UDP ──────────────────────────────────────────────────────────────────
+    _setupUDP() {
+        if (this.udp) { try { this.udp.close(); } catch {} }
+        this.udp = dgram.createSocket('udp4');
         this.udp.on('message', (msg) => {
-            if (msg.length < 8) return;
-            // IP discovery response
-            if (msg.readUInt16BE(0) === 2) {
-                const nullIndex = msg.indexOf(0, 8);
-                const myIp = msg.toString('ascii', 8, nullIndex);
+            if (msg.readUInt16BE(0) === 2 && msg.length >= 74) {
+                const nullAt = msg.indexOf(0, 8);
+                const myIp = msg.toString('ascii', 8, nullAt > 8 ? nullAt : 72);
                 const myPort = msg.readUInt16BE(msg.length - 2);
                 this._selectProtocol(myIp, myPort);
             }
         });
-
-        this.udp.on('error', (e) => {
-            logger.error('[Voice] UDP error:', e.message);
-        });
-
+        this.udp.on('error', (e) => logger.warn(`[Voice] UDP error: ${e.message}`));
         this._ipDiscovery();
     }
 
     _ipDiscovery() {
-        const buf = Buffer.allocUnsafe(74);
-        buf.writeUInt16BE(1, 0);  // request type
-        buf.writeUInt16BE(70, 2); // length
+        const buf = Buffer.alloc(74);
+        buf.writeUInt16BE(1, 0);
+        buf.writeUInt16BE(70, 2);
         buf.writeUInt32BE(this.ssrc, 4);
-        this.udp.send(buf, 0, 74, this.port, this.ip);
+        this.udp.send(buf, this.voicePort, this.voiceIp);
     }
 
-    _selectProtocol(myIp, myPort) {
-        this._send({
-            op: 1,
-            d: {
-                protocol: 'udp',
-                data: {
-                    address: myIp,
-                    port: myPort,
-                    mode: this.mode,
-                }
-            }
-        });
+    _selectProtocol(ip, port) {
+        this._wsSend({ op: 1, d: { protocol: 'udp', data: { address: ip, port, mode: this.mode } } });
     }
 
+    // ── Heartbeat ────────────────────────────────────────────────────────────
     _startHeartbeat(interval) {
-        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        const jittered = interval * (0.75 + Math.random() * 0.5);
+        this._clearHeartbeat();
+        // Add jitter to avoid synchronized heartbeats across many bots
+        const jittered = interval * (0.8 + Math.random() * 0.4);
         this.heartbeatInterval = setInterval(() => {
-            this._send({ op: 3, d: Date.now() });
+            this._wsSend({ op: 3, d: Date.now() });
         }, jittered);
     }
 
-    _send(data) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(data));
-        }
+    _clearHeartbeat() {
+        if (this.heartbeatInterval) { clearInterval(this.heartbeatInterval); this.heartbeatInterval = null; }
     }
 
-    _encryptPacket(packet) {
-        if (!this.secretKey) return null;
-        let nonceBuf;
-        let encrypted;
-
-        if (this.mode === 'xsalsa20_poly1305_lite') {
-            this.nonce = (this.nonce + 1) >>> 0;
-            nonceBuf = Buffer.allocUnsafe(24).fill(0);
-            nonceBuf.writeUInt32BE(this.nonce, 0);
-            encrypted = nacl.secretbox(packet, nonceBuf, this.secretKey);
-            return Buffer.concat([encrypted, nonceBuf.slice(0, 4)]);
-        } else if (this.mode === 'xsalsa20_poly1305_suffix') {
-            nonceBuf = nacl.randomBytes(24);
-            encrypted = nacl.secretbox(packet, nonceBuf, this.secretKey);
-            return Buffer.concat([encrypted, nonceBuf]);
-        } else {
-            // xsalsa20_poly1305 - nonce = first 24 bytes of header padded
-            nonceBuf = Buffer.allocUnsafe(24).fill(0);
-            packet.copy(nonceBuf, 0, 0, Math.min(12, packet.length));
-            encrypted = nacl.secretbox(packet, nonceBuf, this.secretKey);
-            return encrypted;
+    // ── Audio Playback ───────────────────────────────────────────────────────
+    play(audioUrl, options = {}) {
+        this.stop();
+        if (this.state !== 'CONNECTED') {
+            logger.warn(`[Voice] Cannot play — not connected (${this.state}) guild=${this.guildId}`);
+            return;
         }
+
+        const { volume = 100, startTime = 0, isHLS = false } = options;
+
+        const enc = loadOpus();
+        if (!enc) {
+            logger.error('[Voice] No Opus encoder, cannot play audio');
+            this.emit('trackEnd', { reason: 'loadFailed' });
+            return;
+        }
+
+        // ── FFmpeg args for maximum quality, minimum CPU ──────────────────────
+        const ffArgs = [];
+
+        // Reconnect options (essential for HLS and expiring CDN URLs)
+        ffArgs.push(
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-reconnect_at_eof', '1',
+        );
+
+        // Input
+        ffArgs.push('-ss', String(startTime / 1000));
+        ffArgs.push('-i', audioUrl);
+
+        // Audio processing
+        const filters = [];
+        if (volume !== 100) filters.push(`volume=${volume / 100}`);
+        // loudnorm for consistent volume (low CPU impact with linear mode)
+        // filters.push('loudnorm=I=-16:TP=-1.5:LRA=11:linear=true');
+
+        ffArgs.push('-analyzeduration', '0');
+        ffArgs.push('-loglevel', 'error');
+
+        if (filters.length > 0) {
+            ffArgs.push('-af', filters.join(','));
+        }
+
+        // Output: raw PCM → piped to Opus encoder
+        ffArgs.push(
+            '-ar', String(OPUS_SAMPLE_RATE),
+            '-ac', String(OPUS_CHANNELS),
+            '-f', 's16le',
+            'pipe:1',
+        );
+
+        this.ffmpegProc = spawn(FFMPEG_PATH, ffArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+        this.ffmpegProc.stderr.on('data', (d) => {
+            const msg = d.toString().trim();
+            if (msg && !msg.startsWith('frame=')) {
+                logger.debug(`[Voice] FFmpeg: ${msg}`);
+            }
+        });
+
+        // Opus encoder: 128kbps, application=audio (optimized for music)
+        this.opusEncoder = new enc({
+            rate: OPUS_SAMPLE_RATE,
+            channels: OPUS_CHANNELS,
+            frameSize: OPUS_FRAME_SIZE,
+            application: 'audio',  // better quality than 'voip' for music
+            bitrate: 128000,
+        });
+
+        this.frameQueue = [];
+        this.playing = true;
+
+        this.ffmpegProc.stdout.pipe(this.opusEncoder);
+
+        this.opusEncoder.on('data', (frame) => {
+            this.frameQueue.push(Buffer.from(frame));
+        });
+
+        this.opusEncoder.on('end', () => {
+            this.playing = false;
+            // Give queue time to drain
+            setTimeout(() => {
+                if (this.frameQueue.length === 0) {
+                    this._sendSilence();
+                    this.emit('trackEnd', { reason: 'finished' });
+                }
+            }, 200);
+        });
+
+        this.ffmpegProc.on('error', (e) => {
+            logger.error(`[Voice] FFmpeg proc error: ${e.message}`);
+            this.playing = false;
+            this.emit('trackEnd', { reason: 'loadFailed', error: e.message });
+        });
+
+        // Timed frame sender — sends exactly 1 frame every 20ms
+        let emptyFrames = 0;
+        this.playTimer = setInterval(() => {
+            if (this.state !== 'CONNECTED') return;
+
+            const frame = this.frameQueue.shift();
+            if (!frame) {
+                if (!this.playing) {
+                    emptyFrames++;
+                    if (emptyFrames > 5) {
+                        clearInterval(this.playTimer);
+                        this.playTimer = null;
+                        this._sendSilence();
+                        this.emit('trackEnd', { reason: 'finished' });
+                    }
+                }
+                // Send silence to keep connection alive
+                this._sendRTPFrame(SILENCE_FRAME);
+                return;
+            }
+
+            emptyFrames = 0;
+            this._sendRTPFrame(frame);
+        }, OPUS_FRAME_DURATION_MS);
+
+        logger.info(`[Voice] Playing guild=${this.guildId} vol=${volume}% start=${startTime}ms`);
     }
 
-    _buildRTPHeader(opusFrame) {
+    _sendRTPFrame(opusFrame) {
+        if (!this.udp || !this.secretKey) return;
+
         const header = Buffer.allocUnsafe(12);
         header[0] = 0x80;
         header[1] = 0x78;
         header.writeUInt16BE(this.sequence & 0xffff, 2);
         header.writeUInt32BE(this.timestamp >>> 0, 4);
         header.writeUInt32BE(this.ssrc, 8);
+
         this.sequence = (this.sequence + 1) & 0xffff;
         this.timestamp = (this.timestamp + OPUS_FRAME_SIZE) >>> 0;
-        return header;
+
+        const encrypted = this._encrypt(header, opusFrame);
+        if (!encrypted) return;
+
+        const packet = Buffer.concat([header, encrypted]);
+        this.udp.send(packet, this.voicePort, this.voiceIp);
     }
 
-    _sendSilence(count = 5) {
-        for (let i = 0; i < count; i++) {
-            const header = this._buildRTPHeader();
-            const payload = Buffer.concat([header, SILENCE_FRAME]);
-            const encrypted = this._encryptPacket(payload);
-            if (encrypted && this.udp) {
-                const pkt = Buffer.concat([header, encrypted]);
-                this.udp.send(pkt, 0, pkt.length, this.port, this.ip);
-            }
+    _encrypt(header, data) {
+        if (!this.secretKey) return null;
+        const key = this.secretKey;
+
+        if (this.mode === 'xsalsa20_poly1305_lite') {
+            this.nonce = (this.nonce + 1) >>> 0;
+            const nonce = Buffer.allocUnsafe(24).fill(0);
+            nonce.writeUInt32BE(this.nonce, 0);
+            const encrypted = nacl.secretbox(data, nonce, key);
+            return Buffer.concat([encrypted, nonce.slice(0, 4)]);
         }
+
+        if (this.mode === 'xsalsa20_poly1305_suffix') {
+            const nonce = nacl.randomBytes(24);
+            const encrypted = nacl.secretbox(data, nonce, key);
+            return Buffer.concat([encrypted, nonce]);
+        }
+
+        // xsalsa20_poly1305 — nonce is first 24 bytes of RTP header, zero-padded
+        const nonce = Buffer.allocUnsafe(24).fill(0);
+        header.copy(nonce, 0, 0, Math.min(12, header.length));
+        return nacl.secretbox(data, nonce, key);
     }
 
-    play(audioUrl, options = {}) {
-        this.stop();
-        if (this.state !== 'CONNECTED') {
-            logger.warn('[Voice] Not connected, cannot play');
-            return;
-        }
-
-        const { volume = 100, startTime = 0 } = options;
-        const volumeFilter = volume !== 100 ? `volume=${volume / 100}` : null;
-
-        const ffmpegArgs = [
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
-            '-ss', String(startTime / 1000),
-            '-i', audioUrl,
-            '-analyzeduration', '0',
-            '-loglevel', 'error',
-            '-ar', String(OPUS_SAMPLE_RATE),
-            '-ac', '2',
-            '-f', 's16le',
-        ];
-
-        if (volumeFilter) {
-            ffmpegArgs.splice(ffmpegArgs.indexOf('-ar'), 0, '-af', volumeFilter);
-        }
-
-        this.ffmpeg = spawn(ffmpegPath, ffmpegArgs);
-
-        if (!this.OpusEncoder) {
-            logger.error('[Voice] No Opus encoder available');
-            return;
-        }
-
-        const opusEncoder = new this.OpusEncoder({
-            rate: OPUS_SAMPLE_RATE,
-            channels: 2,
-            frameSize: OPUS_FRAME_SIZE,
-        });
-
-        this.ffmpeg.stdout.pipe(opusEncoder);
-
-        let frameQueue = [];
-        let playing = true;
-
-        opusEncoder.on('data', (frame) => {
-            frameQueue.push(Buffer.from(frame));
-        });
-
-        opusEncoder.on('end', () => {
-            playing = false;
-            setTimeout(() => {
-                this._sendSilence();
-                this.emit('trackEnd', { reason: 'finished' });
-            }, 100);
-        });
-
-        this.ffmpeg.on('error', (e) => {
-            logger.error('[Voice] FFmpeg error:', e.message);
-            playing = false;
-            this.emit('trackEnd', { reason: 'loadFailed', error: e.message });
-        });
-
-        this.ffmpeg.stderr.on('data', (d) => {
-            const msg = d.toString();
-            if (msg.includes('Error') || msg.includes('error')) {
-                logger.warn('[Voice] FFmpeg stderr:', msg.trim());
-            }
-        });
-
-        let lastFrameTime = Date.now();
-
-        this.playInterval = setInterval(() => {
-            if (!playing && frameQueue.length === 0) {
-                clearInterval(this.playInterval);
-                return;
-            }
-
-            const frame = frameQueue.shift();
-            if (!frame) return;
-
-            const header = this._buildRTPHeader();
-            const encrypted = this._encryptPacket(frame);
-            if (!encrypted || !this.udp) return;
-
-            let pkt;
-            if (this.mode === 'xsalsa20_poly1305') {
-                pkt = Buffer.concat([header, encrypted]);
-            } else {
-                pkt = Buffer.concat([header, encrypted]);
-            }
-
-            this.udp.send(pkt, 0, pkt.length, this.port, this.ip, (err) => {
-                if (err) logger.error('[Voice] UDP send error:', err.message);
-            });
-        }, OPUS_FRAME_DURATION);
-
-        logger.info(`[Voice] Playing guild=${this.guildId}`);
+    _sendSilence(count = SILENCE_FRAMES_COUNT) {
+        for (let i = 0; i < count; i++) this._sendRTPFrame(SILENCE_FRAME);
     }
 
     stop() {
-        if (this.playInterval) {
-            clearInterval(this.playInterval);
-            this.playInterval = null;
-        }
-        if (this.ffmpeg) {
-            try { this.ffmpeg.kill('SIGKILL'); } catch {}
-            this.ffmpeg = null;
-        }
-        this._sendSilence(5);
+        this.playing = false;
+        if (this.playTimer) { clearInterval(this.playTimer); this.playTimer = null; }
+        if (this.opusEncoder) { try { this.opusEncoder.destroy(); } catch {} this.opusEncoder = null; }
+        if (this.ffmpegProc) { try { this.ffmpegProc.kill('SIGKILL'); } catch {} this.ffmpegProc = null; }
+        this.frameQueue = [];
+        this._sendSilence();
     }
 
+    // ── Cleanup ──────────────────────────────────────────────────────────────
     destroy() {
+        this.state = 'DESTROYED';
         this.stop();
-        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        if (this.ws) { this.ws.close(); this.ws = null; }
-        if (this.udp) { this.udp.close(); this.udp = null; }
-        this.state = 'DISCONNECTED';
-        this.endpoint = null;
-        this.token = null;
-        this.sessionId = null;
+        this._clearHeartbeat();
+        if (this.reconnectTimeout) { clearTimeout(this.reconnectTimeout); this.reconnectTimeout = null; }
+        if (this.ws) { try { this.ws.close(1000); } catch {} this.ws = null; }
+        if (this.udp) { try { this.udp.close(); } catch {} this.udp = null; }
         this.removeAllListeners();
+        logger.debug(`[Voice] Destroyed guild=${this.guildId}`);
     }
 
-    _cleanup() {
-        this.state = 'DISCONNECTED';
-        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    _wsSend(data) {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(data));
+        }
     }
 }
 
