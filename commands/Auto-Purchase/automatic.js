@@ -1,5 +1,5 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
-const { owners } = require(`${process.cwd()}/Settings/config`);
+const { owners } = require(`${process.cwd()}/settings/config`);
 
 module.exports = {
   name: "automatic",
