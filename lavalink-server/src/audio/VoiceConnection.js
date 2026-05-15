@@ -80,6 +80,7 @@ class VoiceConnection extends EventEmitter {
         this.reconnectTimeout = null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
+        this.lastCloseCode = null;
 
         loadOpus();
     }
@@ -168,18 +169,30 @@ class VoiceConnection extends EventEmitter {
         this._clearHeartbeat();
         if (this.state === 'DESTROYED') return;
 
-        // Resumable codes
-        if ([4001, 4004, 4006, 4009, 4011, 4014, 4016].includes(code)) {
-            logger.warn(`[Voice] Non-resumable close code ${code}, destroying`);
+        this.lastCloseCode = code;
+
+        const nonResumableCodes = new Set([4001, 4004, 4006, 4009, 4011, 4014, 4016, 4017]);
+        if (nonResumableCodes.has(code)) {
+            const hint = code === 4017 ? ' (DAVE/E2EE-capable voice implementation required)' : '';
+            logger.warn(`[Voice] Non-resumable close code ${code}${hint}; waiting for a fresh voice update guild=${this.guildId}`);
             this.state = 'DISCONNECTED';
+            this._closeTransport();
+            this.emit('disconnected', code);
+            return;
+        }
+
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            logger.warn(`[Voice] Max reconnect attempts reached guild=${this.guildId}`);
+            this.state = 'DISCONNECTED';
+            this._closeTransport();
             this.emit('disconnected', code);
             return;
         }
 
         this.state = 'CONNECTING';
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
         this.reconnectAttempts++;
-        logger.info(`[Voice] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}) guild=${this.guildId}`);
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+        logger.info(`[Voice] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) guild=${this.guildId}`);
         this.reconnectTimeout = setTimeout(() => {
             if (this.state !== 'DESTROYED') this._connectWS();
         }, delay);
@@ -225,6 +238,12 @@ class VoiceConnection extends EventEmitter {
 
     _clearHeartbeat() {
         if (this.heartbeatInterval) { clearInterval(this.heartbeatInterval); this.heartbeatInterval = null; }
+    }
+
+    _closeTransport() {
+        if (this.reconnectTimeout) { clearTimeout(this.reconnectTimeout); this.reconnectTimeout = null; }
+        if (this.udp) { try { this.udp.close(); } catch {} this.udp = null; }
+        this.ws = null;
     }
 
     // ── Audio Playback ───────────────────────────────────────────────────────

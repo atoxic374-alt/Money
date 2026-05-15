@@ -33,8 +33,14 @@ module.exports = {
     }
 
     const subscriptionTime = args[3];
-    const subscriptionDuration = ms(subscriptionTime);
-    if (!subscriptionDuration) return message.reply("**يرجى إدخال وقت صحيح للاشتراك.**");
+    if (typeof subscriptionTime !== 'string' || subscriptionTime.trim().length === 0) {
+      return message.reply('**يرجى إرفاق مدة الاشتراك مثل `1d` أو `12h` أو `30m`.**');
+    }
+
+    const subscriptionDuration = ms(subscriptionTime.trim());
+    if (typeof subscriptionDuration !== 'number' || !Number.isFinite(subscriptionDuration) || subscriptionDuration <= 0) {
+      return message.reply('**يرجى إدخال وقت صحيح للاشتراك مثل `1d` أو `12h` أو `30m`.**');
+    }
 
     const formattedDuration = formatDuration(subscriptionDuration);
 
@@ -45,7 +51,7 @@ module.exports = {
       user: userId,
       server: serverId,
       botsCount: count,
-      subscriptionTime: subscriptionTime,
+      subscriptionTime: subscriptionTime.trim(),
       expirationTime: expirationTime,
       code: `#${randomCode}`
     };

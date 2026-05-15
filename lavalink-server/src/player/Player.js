@@ -28,6 +28,8 @@ class Player extends EventEmitter {
         };
 
         this.voiceConn = null;
+        this.voiceConnectKey = null;
+        this.lastVoiceFailure = null;
         this.positionTimer = null;
         this.startedAt = null;
     }
@@ -39,24 +41,42 @@ class Player extends EventEmitter {
         if (sessionId) this.voice.sessionId = sessionId;
 
         if (this.voice.token && this.voice.endpoint && this.voice.sessionId) {
-            this._connectVoice();
+            const nextConnectKey = `${this.voice.endpoint}:${this.voice.sessionId}:${this.voice.token}`;
+            if (
+                this.voiceConn
+                && this.voiceConnectKey === nextConnectKey
+                && ['CONNECTING', 'CONNECTED'].includes(this.voiceConn.state)
+            ) {
+                return;
+            }
+
+            this._connectVoice(nextConnectKey);
         }
     }
 
-    _connectVoice() {
+    _connectVoice(connectKey) {
         if (this.voiceConn) {
             this.voiceConn.destroy();
         }
 
+        this.state.connected = false;
+        this.voiceConnectKey = connectKey;
         this.voiceConn = new VoiceConnection(this.guildId, this.userId);
 
         this.voiceConn.on('ready', () => {
             this.state.connected = true;
+            this.lastVoiceFailure = null;
             this.emit('voiceReady');
             // If we have a pending track, play it
             if (this.track && !this.paused) {
                 this._startPlaying();
             }
+        });
+
+        this.voiceConn.on('disconnected', (code) => {
+            this.state.connected = false;
+            this.lastVoiceFailure = { code, at: Date.now() };
+            this.emit('voiceDisconnected', { guildId: this.guildId, code });
         });
 
         this.voiceConn.on('trackEnd', ({ reason, error }) => {
@@ -167,6 +187,7 @@ class Player extends EventEmitter {
             this.voiceConn.destroy();
             this.voiceConn = null;
         }
+        this.voiceConnectKey = null;
         this.track = null;
         this.removeAllListeners();
     }
@@ -211,6 +232,7 @@ class Player extends EventEmitter {
                 ping: this.state.ping || 0,
             },
             voice: this.voice,
+            voiceFailure: this.lastVoiceFailure,
             filters: this.filters,
         };
     }

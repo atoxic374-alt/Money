@@ -21,7 +21,14 @@ module.exports = {
     if (!codeToAddTime) return message.reply("**يرجى إرفاق ايدي الاشتراك**");
 
     const timeToAdd = args[1];
-    if (!timeToAdd || !ms(timeToAdd)) return message.reply("**يرجى إرفاق وقت صحيح.**");
+    if (typeof timeToAdd !== 'string' || timeToAdd.trim().length === 0) {
+      return message.reply('**يرجى إرفاق وقت صحيح مثل `1d` أو `12h` أو `30m`.**');
+    }
+
+    const durationToAdd = ms(timeToAdd.trim());
+    if (typeof durationToAdd !== 'number' || !Number.isFinite(durationToAdd) || durationToAdd <= 0) {
+      return message.reply('**يرجى إرفاق وقت صحيح مثل `1d` أو `12h` أو `30m`.**');
+    }
 
     try {
       const logs = fs.readFileSync('./settings/time.json', 'utf8');
@@ -33,7 +40,7 @@ module.exports = {
         return message.reply("**لا يوجد اشتراك مرتبط بهذا الايدي.**");
       }
 
-      const newExpirationTime = matchingSubscription.expirationTime + ms(timeToAdd);
+      const newExpirationTime = matchingSubscription.expirationTime + durationToAdd;
       matchingSubscription.expirationTime = newExpirationTime;
 
       const totalRemainingTime = newExpirationTime - Date.now();
@@ -49,7 +56,7 @@ module.exports = {
 
       const embed = new EmbedBuilder()
         .setThumbnail("https://cdn.discordapp.com/attachments/1091536665912299530/1316233635464220803/512-512-max.png?ex=675a4d99&is=6758fc19&hm=352d005827ec0252e09be31a939f3c2f1abb3c8a0d660f20012ac80a2bc62b12&")
-        .setDescription(`\`🟢\` **Add Time**\n\n**By : <@${message.author.id}>**\n\`1\` : \`Music (SuID ${code})\` : \`${timeToAdd}\` added\nTotal remaining time: \`${formattedTotalRemaining}\` : <@${userId}>`)
+        .setDescription(`\`🟢\` **Add Time**\n\n**By : <@${message.author.id}>**\n\`1\` : \`Music (SuID ${code})\` : \`${timeToAdd.trim()}\` added\nTotal remaining time: \`${formattedTotalRemaining}\` : <@${userId}>`)
         .setFooter({ text: `${message.guild.name} | Timer`, iconURL: message.guild.iconURL({ dynamic: true }) })
         .setColor(Colors);
 

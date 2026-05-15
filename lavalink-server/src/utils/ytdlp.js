@@ -91,9 +91,30 @@ async function ytdlp(url, args = [], options = {}) {
     throw lastError || new Error('yt-dlp failed after all retries');
 }
 
+
+function withEnvironmentArgs(args) {
+    const finalArgs = [...args];
+    const hasArg = (name) => finalArgs.includes(name) || finalArgs.some(arg => arg.startsWith(`${name}=`));
+    const hasHeader = (headerName) => finalArgs.some((arg, index) => {
+        if (arg !== '--add-header') return false;
+        return String(finalArgs[index + 1] || '').toLowerCase().startsWith(`${headerName.toLowerCase()}:`);
+    });
+
+    if (process.env.YTDLP_USER_AGENT && !hasHeader('user-agent')) {
+        finalArgs.push('--add-header', `user-agent:${process.env.YTDLP_USER_AGENT}`);
+    }
+
+    if (process.env.YTDLP_COOKIES_PATH && !hasArg('--cookies')) {
+        finalArgs.push('--cookies', process.env.YTDLP_COOKIES_PATH);
+    }
+
+    return finalArgs;
+}
+
 function _exec(url, args, timeout) {
     return new Promise((resolve, reject) => {
-        const proc = spawn('yt-dlp', [...args, url], {
+        const finalArgs = withEnvironmentArgs(args);
+        const proc = spawn('yt-dlp', [...finalArgs, url], {
             stdio: ['ignore', 'pipe', 'pipe'],
         });
 
