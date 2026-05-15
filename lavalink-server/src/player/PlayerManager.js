@@ -98,6 +98,20 @@ class PlayerManager {
                 thresholdMs,
             });
         });
+
+        player.on('voiceDisconnected', ({ guildId, code }) => {
+            this.wsManager.sendToSession(sessionId, {
+                op: 'event',
+                type: 'TrackExceptionEvent',
+                guildId,
+                track: player.track,
+                exception: {
+                    message: `Discord voice gateway closed with code ${code}`,
+                    severity: code === 4017 ? 'fault' : 'suspicious',
+                    cause: 'voiceDisconnected',
+                },
+            });
+        });
     }
 
     _startStats() {

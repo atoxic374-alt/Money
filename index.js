@@ -67,60 +67,73 @@ client.once('ready', () => {
     function checkSubscriptions() {
     try {
       const logs = fs.readFileSync('./settings/time.json', 'utf8');
-      const logsArray = JSON.parse(logs);
-    
-      const logChannel = client.channels.cache.find(channel => channel.id === logChannelId);
-    
-      logsArray.forEach((log, index) => {
+      const logsArray = JSON.parse(logs || '[]');
+      const remainingLogs = [];
+
+      const logChannel = logChannelId ? client.channels.cache.get(logChannelId) : null;
+      const tokens = fs.readFileSync('./settings/tokens.json', 'utf8');
+      const tokensArray = JSON.parse(tokens || '[]');
+      const bots = fs.readFileSync('./settings/bots.json', 'utf8');
+      const botsArray = JSON.parse(bots || '[]');
+      let tokensChanged = false;
+      let botsChanged = false;
+
+      for (const log of logsArray) {
         const remainingTime = log.expirationTime - Date.now();
-        if (remainingTime <= 0) {
-          const user = client.users.cache.get(log.user);
-          
-          if (user) {
-            const userembed = new EmbedBuilder()
-            .setTitle("إشعار انتهى اشتراك! 🔔")
-            .setThumbnail("https://cdn.discordapp.com/attachments/1091536665912299530/1316233635464220803/512-512-max.png?ex=675a4d99&is=6758fc19&hm=352d005827ec0252e09be31a939f3c2f1abb3c8a0d660f20012ac80a2bc62b12&")
-            .setDescription(`> الإسم : <@${user.id}>\n> ألاشتراك : \`Music x${log.botsCount}\` \`(SuID ${log.code})\`\n> بدأ فيـ : \`${new Date(log.expirationTime).toLocaleString()}\``)
-            .setColor(Colors);
-            
-               user.send({ content: `> <@${user.id}>`, embeds: [userembed] })
-              .catch(error => console.error(`Could not send DM to ${user.tag}.\n`, error)); 
-                  
-    
+        if (remainingTime > 0) {
+          remainingLogs.push(log);
+          continue;
+        }
+
+        const user = client.users.cache.get(log.user);
+        if (user) {
+          const userembed = new EmbedBuilder()
+          .setTitle("إشعار انتهى اشتراك! 🔔")
+          .setThumbnail("https://cdn.discordapp.com/attachments/1091536665912299530/1316233635464220803/512-512-max.png?ex=675a4d99&is=6758fc19&hm=352d005827ec0252e09be31a939f3c2f1abb3c8a0d660f20012ac80a2bc62b12&")
+          .setDescription(`> الإسم : <@${user.id}>\n> ألاشتراك : \`Music x${log.botsCount}\` \`(SuID ${log.code})\`\n> بدأ فيـ : \`${new Date(log.expirationTime).toLocaleString()}\``)
+          .setColor(Colors);
+
+          user.send({ content: `> <@${user.id}>`, embeds: [userembed] })
+          .catch(error => console.error(`Could not send DM to ${user.tag}.\n`, error));
+
+          if (logChannel) {
             const embed = new EmbedBuilder()
             .setTitle("إشعار انتهى اشتراك! 🔔")
             .setThumbnail("https://cdn.discordapp.com/attachments/1091536665912299530/1316233635464220803/512-512-max.png?ex=675a4d99&is=6758fc19&hm=352d005827ec0252e09be31a939f3c2f1abb3c8a0d660f20012ac80a2bc62b12&")
             .setDescription(`> الإسم : <@${user.id}>\n> ألاشتراك : \`Music x${log.botsCount}\` \`(SuID ${log.code})\`\n> بدأ فيـ : \`${new Date(log.expirationTime).toLocaleString()}\``)
             .setColor(Colors);
-            
-            logChannel.send({ content: "```العملية تمت بنجاح، وتم حذف أشتراك العميل.```", embeds: [embed] });
-             
+
+            logChannel.send({ content: "```العملية تمت بنجاح، وتم حذف أشتراك العميل.```", embeds: [embed] })
+            .catch(error => console.error('Could not send subscription expiration log.\n', error));
           }
-    
-          logsArray.splice(index, 1);
-          const tokens = fs.readFileSync('./settings/tokens.json', 'utf8');
-          const tokensArray = JSON.parse(tokens);
-    
-          const tokensToRemove = tokensArray.filter(tokenEntry => tokenEntry.code === log.code);
-    
-          const bots = fs.readFileSync('./settings/bots.json', 'utf8');
-
-
-          const botsArray = JSON.parse(bots);
-    
-          tokensToRemove.forEach(tokenEntry => {
-            botsArray.push({
-              token: tokenEntry.token,
-            });
-          });
-    
-          fs.writeFileSync('./settings/bots.json', JSON.stringify(botsArray, null, 2));
-    
-          const updatedTokensArray = tokensArray.filter(tokenEntry => !tokensToRemove.includes(tokenEntry));
-          fs.writeFileSync('./settings/tokens.json', JSON.stringify(updatedTokensArray, null, 2));
         }
-      });
-      fs.writeFileSync('./settings/time.json', JSON.stringify(logsArray, null, 2));
+
+        const tokensToRemove = tokensArray.filter(tokenEntry => tokenEntry.code === log.code);
+        tokensToRemove.forEach(tokenEntry => {
+          botsArray.push({ token: tokenEntry.token });
+          botsChanged = true;
+        });
+
+        if (tokensToRemove.length > 0) {
+          tokensChanged = true;
+        }
+
+        for (let index = tokensArray.length - 1; index >= 0; index--) {
+          if (tokensArray[index].code === log.code) {
+            tokensArray.splice(index, 1);
+          }
+        }
+      }
+
+      if (botsChanged) {
+        fs.writeFileSync('./settings/bots.json', JSON.stringify(botsArray, null, 2));
+      }
+
+      if (tokensChanged) {
+        fs.writeFileSync('./settings/tokens.json', JSON.stringify(tokensArray, null, 2));
+      }
+
+      fs.writeFileSync('./settings/time.json', JSON.stringify(remainingLogs, null, 2));
     } catch (error) {
       console.error('❌>', error);
     }

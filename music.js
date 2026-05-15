@@ -10,7 +10,8 @@ const {
     ButtonBuilder,
     ButtonStyle,
     StringSelectMenuBuilder,
-    ActivityType
+    ActivityType,
+    PermissionFlagsBits
 } = require('discord.js');
 
 const fs = require('fs');
@@ -26,11 +27,19 @@ tempData.set("bots", []);
 const collection = new Collection();
 const artistTracksCache = new Collection();
 const nowPlayingMessages = new Collection();
+const voiceReconnectState = new Collection();
+const VOICE_RETRY_BASE_MS = 15000;
+const VOICE_RETRY_MAX_MS = 300000;
+
+function getVoiceRetryDelay(attempts) {
+    return Math.min(VOICE_RETRY_BASE_MS * Math.pow(2, Math.max(0, attempts - 1)), VOICE_RETRY_MAX_MS);
+}
+
 
 module.exports = {
     runsys: async function runBotSystem(token, idbot) {
         if (runningBots.has(token)) {
-            return;
+            return runningBots.get(token);
         }
         let hostConfig;
         try {
@@ -63,13 +72,15 @@ module.exports = {
             reconnectTimeout: 5000,
         });
 
-        // ✅ Required for Lavalink/Poru voice handshake (VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE)
-        // Without this, bots may join VC but audio will be silent.
+        // ✅ Required for Lavalink/Poru voice handshake (VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE).
+        // Lavalink needs both packets to build { token, endpoint, sessionId } for Discord voice.
         TrueMusic.on('raw', (packet) => {
+            if (!['VOICE_STATE_UPDATE', 'VOICE_SERVER_UPDATE'].includes(packet?.t)) return;
+
             try {
                 TrueMusic.poru.packetUpdate(packet);
-            } catch {
-                // ignore
+            } catch (error) {
+                console.warn(`[Voice] Failed to forward ${packet?.t || 'unknown'} to Poru: ${error.message}`);
             }
         });
 
@@ -155,8 +166,14 @@ module.exports = {
                             const currentVC = guild.members.me.voice.channel;
 
                             if (!currentVC || currentVC.id !== musicChannel.id) {
-                                const player = TrueMusic.poru.players.get(guild.id);
-                                if (player) player.destroy();
+                                const retryKey = `${TrueMusic.user.id}:${guild.id}`;
+                                const retryState = voiceReconnectState.get(retryKey) || { attempts: 0, nextRetryAt: 0 };
+                                const existingPlayer = TrueMusic.poru.players.get(guild.id);
+                                const now = Date.now();
+
+                                if (existingPlayer && retryState.attempts > 0 && now < retryState.nextRetryAt) return;
+                                if (!existingPlayer && now < retryState.nextRetryAt) return;
+                                if (existingPlayer) existingPlayer.destroy();
 
                                 if (!TrueMusic.readyAt) return;
 
@@ -168,8 +185,18 @@ module.exports = {
                                         deaf: true,
                                         group: tokenObj.token,
                                     });
+                                    voiceReconnectState.delete(retryKey);
                                 } catch (err) {
+                                    const attempts = retryState.attempts + 1;
+                                    const delay = getVoiceRetryDelay(attempts);
+                                    voiceReconnectState.set(retryKey, {
+                                        attempts,
+                                        nextRetryAt: Date.now() + delay,
+                                    });
+                                    console.warn(`[Voice] Join failed guild=${guild.id}; retry in ${Math.round(delay / 1000)}s: ${err.message}`);
                                 }
+                            } else {
+                                voiceReconnectState.delete(`${TrueMusic.user.id}:${guild.id}`);
                             }
                         }
                     }
@@ -231,8 +258,8 @@ module.exports = {
                         const botOwnerId = tokenObj.client;
                         const button1 = new ButtonBuilder()
                             .setLabel('Support Server')
-                            .setStyle('Link')
-                            .setURL('discord.gg/QLY');
+                            .setStyle(ButtonStyle.Link)
+                            .setURL('https://discord.gg/QLY');
 
                         const row1 = new ActionRowBuilder().addComponents(button1);
                         const helpEmbed = new EmbedBuilder()
@@ -306,7 +333,7 @@ module.exports = {
                     }
 
 
-                    if (!owners.includes(message.author.id) && !message.member.permissions.has('ADMINISTRATOR')) {
+                    if (!owners.includes(message.author.id) && !message.member.permissions.has(PermissionFlagsBits.Administrator)) {
                         return;
                     }
                     if (args[0] == 'restart' || args[0] == 'اعاده') {
@@ -1770,8 +1797,11 @@ module.exports = {
             await TrueMusic.login(token);
         } catch (e) {
             console.log(`Failed to login with token: ${token}`);
+            runningBots.delete(token);
             return;
         }
+
+        return TrueMusic;
 
     }
 }

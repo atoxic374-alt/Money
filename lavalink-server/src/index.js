@@ -11,6 +11,7 @@ const chalk = require('chalk');
 const os = require('os');
 
 const logger = require('./utils/logger');
+const { getRandomUserAgent } = require('./utils/antibot');
 const WebSocketManager = require('./ws/handler');
 const PlayerManager = require('./player/PlayerManager');
 const { setupRoutes } = require('./rest/router');
@@ -29,6 +30,20 @@ const PASSWORD = process.env.LAVALINK_PASSWORD || config?.lavalink?.server?.pass
 // Set env vars for sources
 if (config?.plugins?.spotify?.clientId)     process.env.SPOTIFY_CLIENT_ID     = config.plugins.spotify.clientId;
 if (config?.plugins?.spotify?.clientSecret) process.env.SPOTIFY_CLIENT_SECRET = config.plugins.spotify.clientSecret;
+
+// Replit/shared-host YouTube protection: keep yt-dlp on a stable browser UA and
+// allow operators to mount exported YouTube cookies without hardcoding secrets.
+const configuredUserAgent = process.env.YTDLP_USER_AGENT
+    || process.env.YOUTUBE_USER_AGENT
+    || config?.plugins?.youtube?.userAgent
+    || getRandomUserAgent();
+const configuredCookiesPath = process.env.YTDLP_COOKIES_PATH
+    || process.env.YOUTUBE_COOKIES_PATH
+    || config?.plugins?.youtube?.cookiesPath
+    || '';
+
+process.env.YTDLP_USER_AGENT = configuredUserAgent;
+if (configuredCookiesPath) process.env.YTDLP_COOKIES_PATH = configuredCookiesPath;
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 console.log(chalk.cyan(`
@@ -73,7 +88,8 @@ server.listen(PORT, HOST, async () => {
     logger.info(`Listening on ${HOST}:${PORT}`);
     logger.info(`Password: ${PASSWORD}`);
     logger.info('Sources: YouTube (iOS/mweb/web) • Spotify • SoundCloud • Deezer • Apple Music • HTTP');
-    logger.info('Anti-ban: Client rotation • UA rotation • Rate limiting • Retry with backoff');
+    logger.info(`Anti-ban: Client rotation • UA=${configuredUserAgent.slice(0, 45)}... • Rate limiting • Retry with backoff`);
+    logger.info(`Cookies: ${configuredCookiesPath ? `enabled (${configuredCookiesPath})` : 'not configured; set YTDLP_COOKIES_PATH on Replit if YouTube flags the IP'}`);
     logger.info('Audio: Opus 128kbps 48kHz stereo • FFmpeg reconnect • HLS/WebM/m4a');
 
     writeHostConfig(HOST, PORT, PASSWORD);

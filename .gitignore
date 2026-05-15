@@ -1,0 +1,9 @@
+node_modules/
+lavalink-server/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+lavalink-server/data/*.jar
+lavalink-server/logs/
+lavalink-server/plugins/*.jar
