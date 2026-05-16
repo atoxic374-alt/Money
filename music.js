@@ -119,6 +119,59 @@ module.exports = {
 
         TrueMusic.poru.on('nodeReconnect', patchPoruRestJson);
 
+        const socketClosedRecovering = new Set();
+
+        TrueMusic.poru.on('socketClosed', async (player, data) => {
+            const { code, guildId } = data;
+            const INVALID_SESSION_CODES = [4006, 4009, 4014, 4015];
+            if (!INVALID_SESSION_CODES.includes(code)) return;
+
+            const recoveryKey = `${TrueMusic.user?.id}:${guildId}`;
+            if (socketClosedRecovering.has(recoveryKey)) return;
+            socketClosedRecovering.add(recoveryKey);
+
+            console.warn(`[Voice] socketClosed ${code} guild=${guildId} — rejoining with fresh session`);
+
+            try {
+                const guild = TrueMusic.guilds.cache.get(guildId);
+                if (!guild) { socketClosedRecovering.delete(recoveryKey); return; }
+
+                const voiceChannelId = player.voiceChannel;
+                const textChannelId  = player.textChannel;
+                const currentTrack   = player.currentTrack;
+                const savedQueue     = player.queue ? [...player.queue] : [];
+                const group          = token;
+
+                player.destroy();
+
+                await new Promise(res => setTimeout(res, 2500));
+
+                if (!voiceChannelId) { socketClosedRecovering.delete(recoveryKey); return; }
+
+                const voiceChannel = guild.channels.cache.get(voiceChannelId);
+                if (!voiceChannel) { socketClosedRecovering.delete(recoveryKey); return; }
+
+                const newPlayer = await TrueMusic.poru.createConnection({
+                    guildId: guild.id,
+                    voiceChannel: voiceChannelId,
+                    textChannel: textChannelId,
+                    deaf: true,
+                    group,
+                });
+
+                if (currentTrack) {
+                    if (savedQueue.length > 0) newPlayer.queue.add(...savedQueue);
+                    newPlayer.queue.unshift(currentTrack);
+                    newPlayer.play();
+                    console.log(`[Voice] Resumed playback after 4006 recovery guild=${guildId}`);
+                }
+            } catch (err) {
+                console.error(`[Voice] Recovery from ${code} failed guild=${guildId}: ${err.message}`);
+            } finally {
+                setTimeout(() => socketClosedRecovering.delete(recoveryKey), 10000);
+            }
+        });
+
         TrueMusic.on('guildCreate', async (guild) => {
             let dataaa;
             try {
