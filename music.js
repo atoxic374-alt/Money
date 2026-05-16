@@ -70,6 +70,8 @@ module.exports = {
             defaultPlatform: 'ytsearch',
             reconnectTries: 20,
             reconnectTimeout: 3000,
+            library: 'discord.js',
+            autoResume: false,
         });
 
         const patchPoruRestJson = (node) => {
@@ -170,6 +172,62 @@ module.exports = {
             } finally {
                 setTimeout(() => socketClosedRecovering.delete(recoveryKey), 10000);
             }
+        });
+
+        // ── trackError: إعادة محاولة من SoundCloud عند فشل YouTube ─────────────
+        TrueMusic.poru.on('trackError', async (player, track, error) => {
+            const title      = track?.info?.title || 'Unknown';
+            const errMsg     = error?.error || error?.message || JSON.stringify(error);
+            const isYouTube  = track?.info?.sourceName === 'youtube';
+
+            console.error(`[Track] Error "${title}" (${track?.info?.sourceName}): ${errMsg}`);
+
+            // YouTube فشل → جرب SoundCloud كاحتياط
+            if (isYouTube && title && title !== 'Unknown') {
+                try {
+                    const fallback = await TrueMusic.poru.resolve({ query: title, source: 'scsearch' });
+                    if (fallback?.tracks?.length > 0) {
+                        const ft = fallback.tracks[0];
+                        ft.info.requester = track.info.requester;
+                        player.queue.unshift(ft);
+                        await player.skip();
+                        console.log(`[Track] Fallback SoundCloud: "${ft.info.title}"`);
+                        return;
+                    }
+                } catch { /* skip fallback silently */ }
+            }
+
+            // لا احتياط → انتقل للأغنية التالية أو أوقف
+            try {
+                if (player.queue.length > 0) {
+                    await player.skip();
+                } else {
+                    await player.destroy();
+                }
+            } catch { /* silent */ }
+        });
+
+        // ── trackStuck: الأغنية توقفت بدون سبب → انتقل للتالية ───────────────
+        TrueMusic.poru.on('trackStuck', async (player, track) => {
+            console.warn(`[Track] Stuck: "${track?.info?.title}" guild=${player.guildId}`);
+            try {
+                if (player.queue.length > 0) {
+                    await player.skip();
+                } else {
+                    await player.destroy();
+                }
+            } catch (e) {
+                console.error(`[Track] Stuck recovery error: ${e.message}`);
+            }
+        });
+
+        // ── nodeError / nodeDisconnect: تسجيل أخطاء الاتصال ──────────────────
+        TrueMusic.poru.on('nodeError', (node, error) => {
+            console.error(`[Lavalink] Node error on ${node.options.host}: ${error?.message || error}`);
+        });
+
+        TrueMusic.poru.on('nodeDisconnect', (node, code, reason) => {
+            console.warn(`[Lavalink] Node disconnected ${node.options.host} — code=${code} reason=${reason || 'none'}`);
         });
 
         TrueMusic.on('guildCreate', async (guild) => {
@@ -959,18 +1017,19 @@ module.exports = {
 
 
             let cmdsArray = {
-                play: [`شغل`, `ش`, `p`, `play`, `P`, `Play`],
-                stop: [`stop`, `وقف`, `Stop`, `توقيف`],
-                skip: [`skip`, `سكب`, `تخطي`, `s`, `س`, `S`, `Skip`],
-                volume: [`volume`, `vol`, `صوت`, `v`, `ص`, `V`, `Vol`, `Volume`],
-                nowplaying: [`nowplaying`, `np`, `Np`, `Nowplaying`, `الشغال`, `الان`],
-                loop: [`loop`, `تكرار`, `l`, `L`, `Loop`],
-                pause: [`pause`, `توقيف`, `كمل`, `pa`, `Pa`, `Pause`, `resume`],
-                seek: [`seek`, `Seek`, `قدم`, `se`, `Se`],
-                autoplay: [`autoplay`, `Autoplay`, `Ap`, `ap`],
-                search: [`search`, `ys`, `بحث`],
-                queue: [`queue`, `قائمة`, `اغاني`, `q`, `qu`, `Q`, `Qu`, `Queue`],
-
+                play:      [`شغل`, `ش`, `p`, `play`, `P`, `Play`],
+                stop:      [`stop`, `وقف`, `Stop`, `توقيف`],
+                skip:      [`skip`, `سكب`, `تخطي`, `s`, `س`, `S`, `Skip`],
+                volume:    [`volume`, `vol`, `صوت`, `v`, `ص`, `V`, `Vol`, `Volume`],
+                nowplaying:[`nowplaying`, `np`, `Np`, `Nowplaying`, `الشغال`, `الان`],
+                loop:      [`loop`, `تكرار`, `l`, `L`, `Loop`],
+                pause:     [`pause`, `توقيف`, `كمل`, `pa`, `Pa`, `Pause`, `resume`],
+                seek:      [`seek`, `Seek`, `se`, `Se`],
+                forward:   [`forward`, `fwd`, `fw`, `تقدم`, `>>`, `أمام`],
+                remove:    [`remove`, `rm`, `del`, `احذف`, `حذف`],
+                autoplay:  [`autoplay`, `Autoplay`, `Ap`, `ap`],
+                search:    [`search`, `ys`, `بحث`],
+                queue:     [`queue`, `قائمة`, `اغاني`, `q`, `qu`, `Q`, `Qu`, `Queue`],
             };
 
             if (cmdsArray.play.includes(command)) {
@@ -1013,7 +1072,17 @@ module.exports = {
 
                 try {
                     const searchSource = tokenObj.source || 'ytsearch';
-                    const res = await TrueMusic.poru.resolve({ query: song, source: searchSource });
+
+                    // جرب المصدر الأساسي، ثم احتياط SoundCloud إذا لم يُعطِ نتائج
+                    let res = await TrueMusic.poru.resolve({ query: song, source: searchSource }).catch(() => null);
+
+                    // إذا فشل البحث في يوتيوب جرب ytmsearch، ثم scsearch
+                    if ((!res || !res.tracks || res.tracks.length === 0) && searchSource === 'ytsearch') {
+                        res = await TrueMusic.poru.resolve({ query: song, source: 'ytmsearch' }).catch(() => null);
+                    }
+                    if (!res || !res.tracks || res.tracks.length === 0) {
+                        res = await TrueMusic.poru.resolve({ query: song, source: 'scsearch' }).catch(() => null);
+                    }
 
                     if (!res || !res.tracks || res.tracks.length === 0) {
                         const embed = new EmbedBuilder()
@@ -1638,12 +1707,7 @@ module.exports = {
                     });
                 }
 
-
-
                 player.data.autoPlay = !player.data.autoPlay;
-
-
-
 
                 const embed = new EmbedBuilder()
                     .setColor(Colors)
@@ -1654,6 +1718,77 @@ module.exports = {
                     embeds: [embed],
                     files: ['./settings/image/icons/AutoPlay.png']
                 });
+
+            } else if (cmdsArray.forward.includes(command)) {
+                // ── forward: تقديم التشغيل بعدد ثوانٍ ─────────────────────────
+                const player = TrueMusic.poru.players.get(message.guild.id);
+                if (!player || !player.currentTrack) {
+                    return message.reply({ content: '*No music is currently playing.*' });
+                }
+                const memberVoiceFwd = message.member?.voice?.channel;
+                const clientVoiceFwd = message.guild.members?.me?.voice?.channel;
+                if (!memberVoiceFwd || !clientVoiceFwd || memberVoiceFwd.id !== clientVoiceFwd.id) return;
+
+                const timeArgFwd = args[0];
+                if (!timeArgFwd) {
+                    const embed = new EmbedBuilder()
+                        .setColor(Colors)
+                        .setDescription('*Please provide time to forward e.g.* `forward 30s` *or* `forward 1:30`');
+                    return message.reply({ embeds: [embed] });
+                }
+
+                let secFwd = 0;
+                if (timeArgFwd.includes(':')) {
+                    const [min, sec] = timeArgFwd.split(':').map(Number);
+                    secFwd = (min * 60) + sec;
+                } else if (timeArgFwd.endsWith('s')) {
+                    secFwd = parseInt(timeArgFwd);
+                } else if (timeArgFwd.endsWith('m')) {
+                    secFwd = parseInt(timeArgFwd) * 60;
+                } else {
+                    secFwd = parseInt(timeArgFwd);
+                }
+
+                if (isNaN(secFwd) || secFwd <= 0) return message.react('❌').catch(() => {});
+
+                const newPosFwd = Math.min(
+                    (player.position || 0) + (secFwd * 1000),
+                    player.currentTrack.info.length - 1000
+                );
+                await player.seekTo(newPosFwd);
+                message.react('⏩').catch(() => {});
+
+            } else if (cmdsArray.remove.includes(command)) {
+                // ── remove: حذف أغنية من القائمة بالرقم ───────────────────────
+                const player = TrueMusic.poru.players.get(message.guild.id);
+                if (!player) {
+                    return message.reply({ content: '*No music is currently playing.*' });
+                }
+                const memberVoiceRm = message.member?.voice?.channel;
+                const clientVoiceRm = message.guild.members?.me?.voice?.channel;
+                if (!memberVoiceRm || !clientVoiceRm || memberVoiceRm.id !== clientVoiceRm.id) return;
+
+                if (!player.queue || player.queue.length === 0) {
+                    const embed = new EmbedBuilder()
+                        .setColor(Colors)
+                        .setThumbnail('attachment://Error.png')
+                        .setDescription('*The queue is empty.*');
+                    return message.reply({ embeds: [embed], files: ['./settings/image/icons/Error.png'] });
+                }
+
+                const posRm = parseInt(args[0]);
+                if (isNaN(posRm) || posRm < 1 || posRm > player.queue.length) {
+                    const embed = new EmbedBuilder()
+                        .setColor(Colors)
+                        .setDescription(`*Please provide a position between* **1** *and* **${player.queue.length}**`);
+                    return message.reply({ embeds: [embed] });
+                }
+
+                const removed = player.queue.splice(posRm - 1, 1)[0];
+                const embed = new EmbedBuilder()
+                    .setColor(Colors)
+                    .setDescription(`*Removed:* **${removed?.info?.title || 'Unknown'}**\n_By:_ **${message.author.displayName}**`);
+                return message.reply({ embeds: [embed] });
             }
 
 

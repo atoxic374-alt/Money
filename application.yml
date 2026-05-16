@@ -3,52 +3,64 @@ server:
   address: 0.0.0.0
 
 plugins:
+
+  # ── YouTube Plugin (يدعم تشغيل YouTube بكفاءة عالية) ──────────────────────
   youtube:
     enabled: true
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
+    # عملاء متعددين لمقاومة الحظر وضمان التشغيل المستمر
     clients:
-      - MUSIC
-      - WEB
-      - ANDROID_MUSIC
-      - IOS
-      - ANDROID_VR
+      - MUSIC          # WEB_REMIX  — أفضل جودة صوت (YouTube Music)
+      - WEB            # المتصفح العادي
+      - ANDROID_MUSIC  # Android YouTube Music
+      - IOS            # تطبيق iPhone
+      - ANDROID_VR     # احتياطي إضافي
+      - TV_SIMPLY_EMBEDDED  # تلفزيون — عميل إضافي للمقاومة
+    # OAuth: معطل حالياً، يمكن تفعيله مستقبلاً لتجاوز القيود
     oauth:
       enabled: false
-      skipInitialization: false
+      skipInitialization: true
+    # POT: يمكن ملؤه مستقبلاً لمقاومة botGuard
     pot:
       token: ""
       visitorData: ""
 
+  # ── LavaSrc Plugin (Spotify / Apple Music / Deezer / SoundCloud) ───────────
   lavasrc:
+    # ترتيب البحث: ISRC أولاً للدقة، ثم اليوتيوب، ثم SoundCloud كاحتياط
     providers:
       - "ytsearch:\"%ISRC%\""
+      - "ytmsearch:\"%ISRC%\""
       - "ytsearch:%QUERY%"
+      - "ytmsearch:%QUERY%"
       - "scsearch:%QUERY%"
     sources:
-      spotify: false
-      applemusic: false
-      deezer: false
+      spotify: false       # فعّل وأضف clientId/clientSecret لتشغيله
+      applemusic: false    # فعّل وأضف mediaAPIToken لتشغيله
+      deezer: false        # فعّل وأضف masterDecryptionKey لتشغيله
       yandexmusic: false
       flowerytts: false
-      youtube: true
+      youtube: true        # YouTube مفعّل دائماً عبر youtube-plugin
+      youtubeMusic: true   # YouTube Music مفعّل
     spotify:
       clientId: ""
       clientSecret: ""
       countryCode: "US"
-      playlistLoadLimit: 6
-      albumLoadLimit: 6
+      playlistLoadLimit: 100
+      albumLoadLimit: 100
     applemusic:
       countryCode: "US"
       mediaAPIToken: ""
-      playlistLoadLimit: 6
-      albumLoadLimit: 6
+      playlistLoadLimit: 100
+      albumLoadLimit: 100
     deezer:
       masterDecryptionKey: ""
     yandexmusic:
       accessToken: ""
 
+# ── Lavalink Core ──────────────────────────────────────────────────────────────
 lavalink:
   plugins:
     - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
@@ -58,14 +70,15 @@ lavalink:
   server:
     password: "youshallnotpass"
     sources:
-      youtube: false
+      youtube: false       # مُعطَّل — نستخدم youtube-plugin بدلاً منه
       bandcamp: true
       soundcloud: true
       twitch: true
       vimeo: true
       nico: false
-      http: true
+      http: true           # لتشغيل روابط مباشرة
       local: false
+    # ── فلاتر الصوت الكاملة ────────────────────────────────────────────────
     filters:
       volume: true
       equalizer: true
@@ -77,18 +90,19 @@ lavalink:
       rotation: true
       channelMix: true
       lowPass: true
-    bufferDurationMs: 400
-    frameBufferDurationMs: 5000
-    opusEncodingQuality: 10
-    resamplingQuality: HIGH
-    trackStuckThresholdMs: 10000
-    useSeekGhosting: true
-    youtubePlaylistLoadLimit: 6
-    playerUpdateInterval: 5
+    # ── إعدادات الأداء والاستقرار ─────────────────────────────────────────
+    bufferDurationMs: 600           # بافر أكبر لمقاومة التأخير
+    frameBufferDurationMs: 10000    # 10 ثوانٍ بافر للحماية من انقطاع YouTube
+    opusEncodingQuality: 10         # أعلى جودة ترميز Opus (0-10)
+    resamplingQuality: HIGH         # أعلى جودة إعادة المعاينة
+    trackStuckThresholdMs: 10000    # 10 ثوانٍ قبل اعتبار الأغنية متوقفة
+    useSeekGhosting: true           # تجنب القفزات أثناء التخطي
+    youtubePlaylistLoadLimit: 100   # تحميل حتى 100 بلايلست
+    playerUpdateInterval: 5         # تحديث موضع التشغيل كل 5 ثوانٍ
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
     gc-warnings: true
-    nonAllocatingFrameBuffer: false
+    nonAllocatingFrameBuffer: true  # أداء أفضل للذاكرة (لا تخصيص ديناميكي)
 
 metrics:
   prometheus:
