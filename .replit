@@ -39,7 +39,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "node lavalink-server/src/index.js"
+args = "java -Xmx512m -Xms128m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -Djdk.tls.client.protocols=TLSv1.2,TLSv1.3 -jar Lavalink.jar"
 
 [[workflows.workflow]]
 name = "Start application"
