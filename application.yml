@@ -17,7 +17,6 @@ plugins:
       - ANDROID_MUSIC  # Android YouTube Music
       - IOS            # تطبيق iPhone
       - ANDROID_VR     # احتياطي إضافي
-      - TV_SIMPLY_EMBEDDED  # تلفزيون — عميل إضافي للمقاومة
     # OAuth: معطل حالياً، يمكن تفعيله مستقبلاً لتجاوز القيود
     oauth:
       enabled: false
