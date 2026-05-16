@@ -15,9 +15,11 @@ const fs = require('fs');
 const {
     prefix,
     Colors,
-    Token,
+    Token: _configToken,
     logChannelId
 } = require(`${process.cwd()}/settings/config`);
+
+const Token = process.env.DISCORD_BOT_TOKEN || _configToken;
 
 const client = new Client({
     intents: [

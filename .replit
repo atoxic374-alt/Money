@@ -40,7 +40,6 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "node lavalink-server/src/index.js"
-waitForPort = 3000
 
 [[workflows.workflow]]
 name = "Start application"
