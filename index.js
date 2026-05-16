@@ -62,7 +62,15 @@ require('./manager.js');
         console.log(err.stack ? err.stack : err);
       });
 
+const { fixDuplicateSubs } = require('./handler/fixDuplicateSubs');
+
 client.once('ready', () => {
+    // Fix any duplicate subscriptions left from before the dedup lock
+    const fixReports = fixDuplicateSubs();
+    fixReports.forEach(function(r) {
+      console.log('[fixDuplicateSubs] merged ' + r.deleted.length + ' duplicate(s) for user=' + r.user + ' into ' + r.kept + ' (bots=' + r.totalBots + ')');
+    });
+
     setInterval(checkSubscriptions, 30000);
     });
     

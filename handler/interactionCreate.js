@@ -5,6 +5,7 @@ const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle
 } = require('discord.js');
 const ms = require('ms');
+const { fixDuplicateSubs } = require('./fixDuplicateSubs');
 
 const THUMB = 'https://cdn.discordapp.com/attachments/1091536665912299530/1316233635464220803/512-512-max.png?ex=675a4d99&is=6758fc19&hm=352d005827ec0252e09be31a939f3c2f1abb3c8a0d660f20012ac80a2bc62b12&';
 
@@ -164,19 +165,37 @@ module.exports = {
           '**البوتات المطلوبة** `(' + count + ')` **اكبر من المتاح** `(' + availableBots.length + ')`**. اضف المزيد اولا.**'
         );
 
+      /* ── auto-fix duplicates before checking ────────────────────────────── */
+      const fixReports = fixDuplicateSubs();
+      fixReports.forEach(function(r) {
+        console.log('[fixDuplicateSubs] merged ' + r.deleted.length + ' dup(s) for user=' + r.user + ' into ' + r.kept + ' (bots=' + r.totalBots + ')');
+      });
+
       /* ── duplicate check: same user + same server ───────────────────────── */
       const timeArr = readJson('./settings/time.json', []);
       if (!Array.isArray(timeArr))
         return errReply(interaction, '**حدث خطا اثناء قراءة بيانات الاشتراكات.**');
 
-      const alreadyExists = timeArr.find(function(e) {
+      const userSubs = timeArr.filter(function(e) {
         return e.user === userId && e.server === serverId && e.expirationTime > Date.now();
       });
-      if (alreadyExists)
+
+      if (userSubs.length > 0) {
+        /* after fixDuplicateSubs there should always be exactly 1 — show it */
+        const sub = userSubs[0];
+        const remaining = sub.expirationTime - Date.now();
+        const rd = Math.floor(remaining / 86400000);
+        const rh = Math.floor((remaining % 86400000) / 3600000);
+        const rm = Math.floor((remaining % 3600000)  / 60000);
+        const timeLeft = (rd ? rd + 'd ' : '') + (rh ? rh + 'h ' : '') + rm + 'm';
         return errReply(interaction,
-          '**هذا المستخدم لديه اشتراك نشط على نفس السيرفر بالفعل** `(' + alreadyExists.code + ')`**.**\n' +
-          '**استخدم** `madd-time` **لتعديل مدة الاشتراك الحالي بدلا من انشاء جديد.**'
+          '**هذا المستخدم لديه اشتراك نشط بالفعل على نفس السيرفر.**\n' +
+          '> **SuID :** `' + sub.code + '`\n' +
+          '> **البوتات :** `' + sub.botsCount + '`\n' +
+          '> **الوقت المتبقي :** `' + timeLeft + '`\n\n' +
+          '**لتعديل المدة استخدم** `madd-time`'
         );
+      }
 
       /* ── validate duration ──────────────────────────────────────────────── */
       const dur = parseDuration(durRaw);
