@@ -13,6 +13,7 @@ const WebSocket = require('ws');
 const dgram = require('dgram');
 const { spawn, execSync } = require('child_process');
 const nacl = require('tweetnacl');
+const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const logger = require('../utils/logger');
 
@@ -23,6 +24,49 @@ try {
         .toString().trim();
 } catch {
     try { FFMPEG_PATH = require('ffmpeg-static'); } catch { FFMPEG_PATH = 'ffmpeg'; }
+}
+
+function rotl32(v, n) {
+    return ((v << n) | (v >>> (32 - n))) >>> 0;
+}
+
+function quarterRound(state, a, b, c, d) {
+    state[a] = (state[a] + state[b]) >>> 0; state[d] = rotl32(state[d] ^ state[a], 16);
+    state[c] = (state[c] + state[d]) >>> 0; state[b] = rotl32(state[b] ^ state[c], 12);
+    state[a] = (state[a] + state[b]) >>> 0; state[d] = rotl32(state[d] ^ state[a], 8);
+    state[c] = (state[c] + state[d]) >>> 0; state[b] = rotl32(state[b] ^ state[c], 7);
+}
+
+function hchacha20(key, nonce16) {
+    const constants = Buffer.from('expand 32-byte k');
+    const state = new Uint32Array(16);
+    for (let i = 0; i < 4; i++) state[i] = constants.readUInt32LE(i * 4);
+    for (let i = 0; i < 8; i++) state[4 + i] = key.readUInt32LE(i * 4);
+    for (let i = 0; i < 4; i++) state[12 + i] = nonce16.readUInt32LE(i * 4);
+
+    for (let i = 0; i < 10; i++) {
+        quarterRound(state, 0, 4, 8, 12);
+        quarterRound(state, 1, 5, 9, 13);
+        quarterRound(state, 2, 6, 10, 14);
+        quarterRound(state, 3, 7, 11, 15);
+        quarterRound(state, 0, 5, 10, 15);
+        quarterRound(state, 1, 6, 11, 12);
+        quarterRound(state, 2, 7, 8, 13);
+        quarterRound(state, 3, 4, 9, 14);
+    }
+
+    const out = Buffer.allocUnsafe(32);
+    [0, 1, 2, 3, 12, 13, 14, 15].forEach((idx, i) => out.writeUInt32LE(state[idx], i * 4));
+    return out;
+}
+
+function xchacha20poly1305Encrypt(plaintext, additionalData, nonce24, key) {
+    const subKey = hchacha20(Buffer.from(key), nonce24.subarray(0, 16));
+    const chachaNonce = Buffer.alloc(12);
+    nonce24.copy(chachaNonce, 4, 16, 24);
+    const cipher = crypto.createCipheriv('chacha20-poly1305', subKey, chachaNonce, { authTagLength: 16 });
+    cipher.setAAD(additionalData);
+    return Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
 }
 
 const OPUS_SAMPLE_RATE = 48000;
@@ -81,6 +125,7 @@ class VoiceConnection extends EventEmitter {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
         this.lastCloseCode = null;
+        this.seqAck = -1;
 
         loadOpus();
     }
@@ -112,14 +157,27 @@ class VoiceConnection extends EventEmitter {
 
         this.ws.on('open', () => this._identify());
         this.ws.on('message', (raw) => {
-            try { this._handleOP(JSON.parse(raw.toString())); } catch {}
+            try {
+                const msg = JSON.parse(raw.toString());
+                if (typeof msg.seq === 'number') this.seqAck = msg.seq;
+                this._handleOP(msg);
+            } catch {}
         });
         this.ws.on('close', (code) => this._onClose(code));
         this.ws.on('error', (e) => logger.warn(`[Voice] WS error guild=${this.guildId}: ${e.message}`));
     }
 
     _identify() {
-        this._wsSend({ op: 0, d: { server_id: this.guildId, user_id: this.userId, session_id: this.sessionId, token: this.token } });
+        this._wsSend({
+            op: 0,
+            d: {
+                server_id: this.guildId,
+                user_id: this.userId,
+                session_id: this.sessionId,
+                token: this.token,
+                max_dave_protocol_version: 0,
+            },
+        });
     }
 
     _handleOP(msg) {
@@ -159,7 +217,13 @@ class VoiceConnection extends EventEmitter {
     }
 
     _pickMode(modes) {
-        const priority = ['xsalsa20_poly1305_lite', 'xsalsa20_poly1305_suffix', 'xsalsa20_poly1305'];
+        const priority = [
+            'aead_aes256_gcm_rtpsize',
+            'aead_xchacha20_poly1305_rtpsize',
+            'xsalsa20_poly1305_lite',
+            'xsalsa20_poly1305_suffix',
+            'xsalsa20_poly1305',
+        ];
         for (const m of priority) if (modes.includes(m)) return m;
         return modes[0];
     }
@@ -232,7 +296,7 @@ class VoiceConnection extends EventEmitter {
         // Add jitter to avoid synchronized heartbeats across many bots
         const jittered = interval * (0.8 + Math.random() * 0.4);
         this.heartbeatInterval = setInterval(() => {
-            this._wsSend({ op: 3, d: Date.now() });
+            this._wsSend({ op: 3, d: { t: Date.now(), seq_ack: this.seqAck } });
         }, jittered);
     }
 
@@ -394,6 +458,23 @@ class VoiceConnection extends EventEmitter {
     _encrypt(header, data) {
         if (!this.secretKey) return null;
         const key = this.secretKey;
+
+        if (this.mode === 'aead_aes256_gcm_rtpsize') {
+            this.nonce = (this.nonce + 1) >>> 0;
+            const nonce = Buffer.alloc(12);
+            nonce.writeUInt32BE(this.nonce, 0);
+            const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(key), nonce);
+            cipher.setAAD(header);
+            const encrypted = Buffer.concat([cipher.update(data), cipher.final(), cipher.getAuthTag()]);
+            return Buffer.concat([encrypted, nonce.slice(0, 4)]);
+        }
+
+        if (this.mode === 'aead_xchacha20_poly1305_rtpsize') {
+            this.nonce = (this.nonce + 1) >>> 0;
+            const nonce = Buffer.alloc(24);
+            nonce.writeUInt32BE(this.nonce, 0);
+            return Buffer.concat([xchacha20poly1305Encrypt(data, header, nonce, Buffer.from(key)), nonce.slice(0, 4)]);
+        }
 
         if (this.mode === 'xsalsa20_poly1305_lite') {
             this.nonce = (this.nonce + 1) >>> 0;
