@@ -72,6 +72,27 @@ module.exports = {
             reconnectTimeout: 3000,
         });
 
+        const patchPoruRestJson = (node) => {
+            if (!node?.rest || node.rest.__moneyJsonPatch) return;
+
+            const originalGet = node.rest.get.bind(node.rest);
+            node.rest.get = async (path) => {
+                const response = await originalGet(path);
+                if (typeof response !== 'string') return response;
+
+                const trimmed = response.trim();
+                if (!trimmed || !['{', '['].includes(trimmed[0])) return response;
+
+                try {
+                    return JSON.parse(trimmed);
+                } catch {
+                    return response;
+                }
+            };
+
+            node.rest.__moneyJsonPatch = true;
+        };
+
         // ✅ Required for Lavalink/Poru voice handshake (VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE).
         // Lavalink needs both packets to build { token, endpoint, sessionId } for Discord voice.
         TrueMusic.on('raw', (packet) => {
@@ -85,6 +106,8 @@ module.exports = {
         });
 
         TrueMusic.poru.on('nodeConnect', (node) => {
+            patchPoruRestJson(node);
+
             let newData = tempData.get("bots");
             newData.push(TrueMusic);
             tempData.set("bots", newData);
@@ -93,6 +116,8 @@ module.exports = {
             console.log(`\x1b[33m${botNumber}\x1b[0m | ${TrueMusic.user?.username || 'Unknown'} | Connected \x1b[32m${node.options.host}\x1b[0m`);
         });
 
+
+        TrueMusic.poru.on('nodeReconnect', patchPoruRestJson);
 
         TrueMusic.on('guildCreate', async (guild) => {
             let dataaa;

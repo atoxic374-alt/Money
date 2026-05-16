@@ -3,20 +3,26 @@ const { loadTracks } = require('../sources');
 const { TrackEncoder } = require('../audio/encoder');
 const logger = require('../utils/logger');
 
+function sendLavalinkJson(res, payload, status = 200) {
+    res.status(status);
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(payload));
+}
+
 // Load tracks by identifier
 router.get('/loadtracks', async (req, res) => {
     const identifier = req.query.identifier;
     if (!identifier) {
-        return res.status(400).json({ error: 'Missing identifier query parameter' });
+        return sendLavalinkJson(res, { error: 'Missing identifier query parameter' }, 400);
     }
 
     try {
         logger.debug(`[REST] loadtracks identifier=${identifier}`);
         const result = await loadTracks(identifier);
-        res.json(result);
+        sendLavalinkJson(res, result);
     } catch (e) {
         logger.error('[REST] loadtracks error:', e.message);
-        res.json({
+        sendLavalinkJson(res, {
             loadType: 'error',
             data: {
                 message: e.message,
