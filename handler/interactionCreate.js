@@ -145,13 +145,24 @@ module.exports = {
       if (isNaN(count) || count <= 0)
         return errReply(interaction, '**يرجى ادخال عدد صحيح وموجب للبوتات.**');
 
-      const bots = readJson('./settings/bots.json', []);
-      if (!Array.isArray(bots))
-        return errReply(interaction, '**حدث خطا اثناء قراءة ملف البوتات.**');
-      if (bots.length === 0)
+      /* read BOTH files now so we can cross-check before touching anything */
+      let tokens = readJson('./settings/tokens.json', []);
+      if (!Array.isArray(tokens)) tokens = [];
+
+      const activeTokenSet = new Set(tokens.map(function(t) { return t.token; }));
+
+      /* bots pool = bots.json entries whose token is NOT already active */
+      const allBots       = readJson('./settings/bots.json', []);
+      const availableBots = Array.isArray(allBots)
+        ? allBots.filter(function(b) { return !activeTokenSet.has(b.token); })
+        : [];
+
+      if (availableBots.length === 0)
         return errReply(interaction, '**لا توجد بوتات متاحة حاليا. اضف بوتات اولا عبر** `madd-tokens`**.**');
-      if (count > bots.length)
-        return errReply(interaction, '**البوتات المطلوبة** `(' + count + ')` **اكبر من المتاح** `(' + bots.length + ')`**. اضف المزيد اولا.**');
+      if (count > availableBots.length)
+        return errReply(interaction,
+          '**البوتات المطلوبة** `(' + count + ')` **اكبر من المتاح** `(' + availableBots.length + ')`**. اضف المزيد اولا.**'
+        );
 
       /* ── duplicate check: same user + same server ───────────────────────── */
       const timeArr = readJson('./settings/time.json', []);
@@ -191,29 +202,14 @@ module.exports = {
       const codes = [];
       for (let g = 0; g < numGroups; g++) codes.push(randCode(5));
 
-      /* ── save time.json ──────────────────────────────────────────────────── */
-      try {
-        for (let g = 0; g < numGroups; g++) {
-          timeArr.push({
-            user: userId,
-            server: serverId,
-            botsCount: groupSizes[g],
-            subscriptionTime: durRaw,
-            expirationTime: expireTime,
-            code: '#' + codes[g]
-          });
-        }
-        fs.writeFileSync('./settings/time.json', JSON.stringify(timeArr, null, 2));
-      } catch (e) {
-        console.error('> time.json write error:', e);
-        return errReply(interaction, '**حدث خطا اثناء حفظ بيانات الاشتراك. حاول مرة اخرى.**');
-      }
+      /* ── pick the bots to assign (from the verified available pool) ──────── */
+      const givenTokens = availableBots.slice(0, count);
 
-      /* ── assign tokens per group ─────────────────────────────────────────── */
-      const givenTokens = bots.splice(0, count);
-      let tokens = readJson('./settings/tokens.json', []);
-      if (!Array.isArray(tokens)) tokens = [];
+      /* build the updated bots.json — remove exactly the picked tokens */
+      const pickedSet    = new Set(givenTokens.map(function(b) { return b.token; }));
+      const remainBots   = allBots.filter(function(b) { return !pickedSet.has(b.token); });
 
+      /* ── assign tokens per group into tokens array ───────────────────────── */
       let offset = 0;
       for (let g = 0; g < numGroups; g++) {
         const groupBots = givenTokens.slice(offset, offset + groupSizes[g]);
@@ -226,12 +222,26 @@ module.exports = {
         });
       }
 
+      /* ── add subscription entries to time array ──────────────────────────── */
+      for (let g = 0; g < numGroups; g++) {
+        timeArr.push({
+          user: userId,
+          server: serverId,
+          botsCount: groupSizes[g],
+          subscriptionTime: durRaw,
+          expirationTime: expireTime,
+          code: '#' + codes[g]
+        });
+      }
+
+      /* ── write all three files atomically (same tick) ────────────────────── */
       try {
-        fs.writeFileSync('./settings/tokens.json', JSON.stringify(tokens, null, 2));
-        fs.writeFileSync('./settings/bots.json',   JSON.stringify(bots,   null, 2));
+        fs.writeFileSync('./settings/time.json',   JSON.stringify(timeArr,    null, 2));
+        fs.writeFileSync('./settings/tokens.json', JSON.stringify(tokens,     null, 2));
+        fs.writeFileSync('./settings/bots.json',   JSON.stringify(remainBots, null, 2));
       } catch (e) {
-        console.error('> tokens/bots write error:', e);
-        return errReply(interaction, '**حدث خطا اثناء حفظ التوكنات.**');
+        console.error('> file write error:', e);
+        return errReply(interaction, '**حدث خطا اثناء حفظ البيانات. حاول مرة اخرى.**');
       }
 
       /* ── build description lines ─────────────────────────────────────────── */
