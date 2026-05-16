@@ -1796,9 +1796,8 @@ module.exports = {
         try {
             await TrueMusic.login(token);
         } catch (e) {
-            console.log(`Failed to login with token: ${token}`);
             runningBots.delete(token);
-            return;
+            return null;
         }
 
         return TrueMusic;

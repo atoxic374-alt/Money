@@ -8,6 +8,9 @@ const ms = require('ms');
 
 const THUMB = 'https://cdn.discordapp.com/attachments/1091536665912299530/1316233635464220803/512-512-max.png?ex=675a4d99&is=6758fc19&hm=352d005827ec0252e09be31a939f3c2f1abb3c8a0d660f20012ac80a2bc62b12&';
 
+/* prevent the same modal submit from being processed twice */
+const processingSet = new Set();
+
 /* ── helpers ──────────────────────────────────────────────────────────────── */
 
 function parseDuration(input) {
@@ -72,7 +75,6 @@ module.exports = {
         });
       }
 
-      /* pass the original message ID so we can update it on submit */
       const modal = new ModalBuilder()
         .setCustomId('addsub_modal:' + interaction.message.id)
         .setTitle('Add Subscription');
@@ -94,7 +96,7 @@ module.exports = {
           new TextInputBuilder()
             .setCustomId('bots_count').setLabel('Bots Count')
             .setPlaceholder('3')
-            .setStyle(TextInputStyle.Short).setMinLength(1).setMaxLength(2).setRequired(true)
+            .setStyle(TextInputStyle.Short).setMinLength(1).setMaxLength(3).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
           new TextInputBuilder()
@@ -112,9 +114,13 @@ module.exports = {
 
       if (!cfg.owners.includes(interaction.user.id)) return;
 
+      /* deduplication — ignore if this exact interaction is already being handled */
+      if (processingSet.has(interaction.id)) return;
+      processingSet.add(interaction.id);
+      setTimeout(function() { processingSet.delete(interaction.id); }, 30000);
+
       const originalMsgId = interaction.customId.split(':')[1];
 
-      /* ephemeral defer — errors shown privately, success updates original msg */
       await interaction.deferReply({ ephemeral: true });
 
       const userId   = interaction.fields.getTextInputValue('user_id').trim();
@@ -168,19 +174,21 @@ module.exports = {
           '**صيغة الوقت** `' + durRaw + '` **غير صحيحة. استخدم مثلا:** `30d` **او** `12h` **او** `60m`**.**'
         );
 
-      /* ── build 3 subscription groups ────────────────────────────────────── */
-      const formatted   = formatDuration(dur);
-      const expireTime  = Date.now() + dur;
-      const expireStr   = new Date(expireTime).toLocaleString('ar-EG', { timeZone: 'Asia/Riyadh' });
-      const numGroups   = Math.min(3, count);
+      /* ── decide number of groups ─────────────────────────────────────────
+         Split into 3 groups ONLY when count > 50.
+         Otherwise a single SuID covers all bots.
+      ─────────────────────────────────────────────────────────────────────── */
+      const numGroups  = count > 50 ? 3 : 1;
+      const formatted  = formatDuration(dur);
+      const expireTime = Date.now() + dur;
+      const expireStr  = new Date(expireTime).toLocaleString('ar-EG', { timeZone: 'Asia/Riyadh' });
 
-      /* distribute bots as evenly as possible across groups */
       const groupSizes = [];
       for (let g = 0; g < numGroups; g++) {
         groupSizes.push(Math.floor(count / numGroups) + (g < count % numGroups ? 1 : 0));
       }
 
-      const codes       = [];
+      const codes = [];
       for (let g = 0; g < numGroups; g++) codes.push(randCode(5));
 
       /* ── save time.json ──────────────────────────────────────────────────── */
@@ -226,7 +234,7 @@ module.exports = {
         return errReply(interaction, '**حدث خطا اثناء حفظ التوكنات.**');
       }
 
-      /* ── build description lines for each group ──────────────────────────── */
+      /* ── build description lines ─────────────────────────────────────────── */
       let descLines = '';
       for (let g = 0; g < numGroups; g++) {
         descLines += '`' + (g + 1) + '` : `Music x' + groupSizes[g] + ' (SuID #' + codes[g] + ') : ' + formatted + '` <@' + userId + '>\n';
@@ -238,11 +246,11 @@ module.exports = {
         .setThumbnail(THUMB)
         .setDescription('> **بواسطّة :** <@' + interaction.user.id + '>\n' + descLines)
         .addFields(
-          { name: 'Server',     value: '`' + serverId  + '`',   inline: true },
-          { name: 'Duration',   value: '`' + formatted  + '`',  inline: true },
-          { name: 'Expires',    value: '`' + expireStr  + '`',  inline: true },
-          { name: 'Packages',   value: '`' + numGroups + ' SuIDs`', inline: true },
-          { name: 'Total Bots', value: '`' + count + '`',       inline: true }
+          { name: 'Server',     value: '`' + serverId  + '`',        inline: true },
+          { name: 'Duration',   value: '`' + formatted  + '`',       inline: true },
+          { name: 'Expires',    value: '`' + expireStr  + '`',       inline: true },
+          { name: 'Packages',   value: '`' + numGroups + ' SuID(s)`', inline: true },
+          { name: 'Total Bots', value: '`' + count + '`',            inline: true }
         )
         .setFooter({ text: interaction.guild.name + ' | Timer', iconURL: interaction.guild.iconURL({ dynamic: true }) })
         .setColor(cfg.Colors)
@@ -263,7 +271,6 @@ module.exports = {
         console.error('> failed to update original message:', e.message);
       }
 
-      /* delete the ephemeral "thinking" indicator */
       await interaction.deleteReply().catch(function() {});
 
       /* ── DM to user ──────────────────────────────────────────────────────── */
