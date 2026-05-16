@@ -35,6 +35,26 @@ class WebSocketManager {
             }
             this._handleConnection(ws, req);
         });
+
+        // ── Heartbeat: ping every 20s to keep connection alive through proxies ──
+        this._heartbeatInterval = setInterval(() => {
+            for (const [sessionId, session] of this.sessions.entries()) {
+                const ws = session.ws;
+                if (!ws) continue;
+
+                if (ws.readyState !== WebSocket.OPEN) continue;
+
+                if (ws._missedPongs > 0) {
+                    // Client didn't respond to last ping — terminate
+                    logger.warn(`[WS] No pong received, terminating session=${sessionId}`);
+                    ws.terminate();
+                    continue;
+                }
+
+                ws._missedPongs = (ws._missedPongs || 0) + 1;
+                try { ws.ping(); } catch (_) {}
+            }
+        }, 20000);
     }
 
     _handleConnection(ws, req) {
@@ -118,6 +138,10 @@ class WebSocketManager {
                 this.sessions.delete(sessionId);
                 if (session.resumeKey) this.resumeKeys.delete(session.resumeKey);
             }
+        });
+
+        ws.on('pong', () => {
+            ws._missedPongs = 0;
         });
 
         ws.on('error', (e) => {

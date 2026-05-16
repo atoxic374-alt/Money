@@ -68,8 +68,8 @@ module.exports = {
 
         TrueMusic.poru = new Poru(TrueMusic, hostConfig, {
             defaultPlatform: 'ytsearch',
-            reconnectTries: 5,
-            reconnectTimeout: 5000,
+            reconnectTries: 20,
+            reconnectTimeout: 3000,
         });
 
         // ✅ Required for Lavalink/Poru voice handshake (VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE).
