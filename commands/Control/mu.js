@@ -223,20 +223,20 @@ module.exports = {
                             ]
                         });
 
-						const filter = (i) => i.user.id === message.author.id;
-						const collector = replyMessage.createMessageComponentCollector({ filter, time: 60000 });
+                                                const filter = (i) => i.user.id === message.author.id;
+                                                const collector = replyMessage.createMessageComponentCollector({ filter, time: 60000 });
 
-						collector.on('collect', async (interaction) => {
-							// زر الإلغاء
-							if (interaction.isButton() && interaction.customId === 'cancel') {
-								await interaction.deferUpdate().catch(() => {});
-								await interaction.message.delete().catch(() => {});
-								collector.stop('cancel');
-								return;
-							}
+                                                collector.on('collect', async (interaction) => {
+                                                        // زر الإلغاء
+                                                        if (interaction.isButton() && interaction.customId === 'cancel') {
+                                                                await interaction.deferUpdate().catch(() => {});
+                                                                await interaction.message.delete().catch(() => {});
+                                                                collector.stop('cancel');
+                                                                return;
+                                                        }
 
-							if (!interaction.isStringSelectMenu() || interaction.customId !== 'vipOptions') return;
-							const selectedOption = interaction.values[0];
+                                                        if (!interaction.isStringSelectMenu() || interaction.customId !== 'vipOptions') return;
+                                                        const selectedOption = interaction.values[0];
                             if (selectedOption === 'allBotsLinks') {
                                 const lastClaimTime = await db.get(`linktime_${message.author.id}`) || 0;
                                 const currentTime = Date.now();
@@ -260,61 +260,40 @@ module.exports = {
 
                                 let totalBots = userTokens.length;
 
-                                let botInfoPromises = [];
-                                for (let [index, token] of userTokens.entries()) {
-                                    const botIntents = [
-                                        GatewayIntentBits.Guilds,
-                                        GatewayIntentBits.GuildVoiceStates,
-                                        GatewayIntentBits.GuildMessages,
-                                        GatewayIntentBits.MessageContent,
-                                    ];
-                                    const bot = new Client({ intents: botIntents });
+                                /* decode client_id directly from token — no login needed */
+                                const botInfos = userTokens.map((token, index) => {
+                                    try {
+                                        const clientId = Buffer.from(token.token.split('.')[0], 'base64').toString();
+                                        return `\`Bot #${index + 1}\` https://discord.com/api/oauth2/authorize?client_id=${clientId}&permissions=0&scope=bot`;
+                                    } catch (e) {
+                                        return null;
+                                    }
+                                }).filter(Boolean);
 
-                                    botInfoPromises.push(new Promise(async (resolve, reject) => {
-                                        try {
-                                            await bot.login(token.token);
-                                            const botInfo = `\`${bot.user?.username || "غير معروف"}\` https://discord.com/api/oauth2/authorize?client_id=${bot.user?.id}&permissions=0&scope=bot`;
-                                            resolve(botInfo);
-                                        } catch (err) {
-                                            reject(err);
-                                        }
-                                    }));
-                                }
-
-                                Promise.all(botInfoPromises)
-                                    .then(botInfos => {
-                                        botInfos.forEach((botInfo, index) => {
-                                            interaction.user.send(`**🔗 : رابط بوت الميوزك رقم ${index + 1} :**\n${botInfo}`)
-                                                .catch((err) => {
-                                                    console.error("حدث خطأ أثناء إرسال الرابط:", err);
-                                                });
+                                botInfos.forEach((botInfo, index) => {
+                                    interaction.user.send(`**🔗 : رابط بوت الميوزك رقم ${index + 1} :**\n${botInfo}`)
+                                        .catch((err) => {
+                                            console.error("حدث خطأ أثناء إرسال الرابط:", err);
                                         });
+                                });
 
-                                        const disabledComponents = interaction.message.components.map(row => {
-                                            return new ActionRowBuilder().addComponents(
-                                                row.components.map(component => {
-                                                    if (component.type === ComponentType.Button) {
-                                                        return ButtonBuilder.from(component).setDisabled(true);
-                                                    } else if (component.type === ComponentType.StringSelect) {
-                                                        return StringSelectMenuBuilder.from(component).setDisabled(true);
-                                                    } else {
-                                                        return component;
-                                                    }
-                                                })
-                                            );
-                                        });
+                                const disabledComponents = interaction.message.components.map(row => {
+                                    return new ActionRowBuilder().addComponents(
+                                        row.components.map(component => {
+                                            if (component.type === ComponentType.Button) {
+                                                return ButtonBuilder.from(component).setDisabled(true);
+                                            } else if (component.type === ComponentType.StringSelect) {
+                                                return StringSelectMenuBuilder.from(component).setDisabled(true);
+                                            } else {
+                                                return component;
+                                            }
+                                        })
+                                    );
+                                });
 
-                                        db.set(`linktime_${message.author.id}`, currentTime);
-
-                                        interaction.followUp({ content: `تم إرسال **${totalBots}** من الروابط إلى الخاص.` });
-                                        interaction.editReply({ components: disabledComponents });
-                                    })
-                                    .catch(err => {
-                                        console.error("حدث خطأ أثناء جمع روابط البوتات:", err);
-                                        interaction.followUp({ content: `\`\`\`.حدث خطأ، يرجى التواصل مع الدعم الفني\`\`\`` });
-                                        interaction.editReply({ components: disabledComponents });
-
-                                    });
+                                db.set(`linktime_${message.author.id}`, currentTime);
+                                interaction.followUp({ content: `تم إرسال **${botInfos.length}** من الروابط إلى الخاص.` });
+                                interaction.editReply({ components: disabledComponents });
                             } else if (selectedOption === 'Off-serverlinks') {
 
                                 const lastClaimTime = await db.get(`Off-serverlinks-${message.author.id}`) || 0;
@@ -337,82 +316,53 @@ module.exports = {
 
                                 await interaction.deferUpdate();
 
-
-                                let totalBots = userTokens.length;
+                                /* For Off-server links: check if bot's stored Server matches
+                                   the user's current server. No login needed — just decode
+                                   the client_id from the token and check the stored Server field. */
+                                const userGuildId = message.guild.id;
                                 let totalSentBots = 0;
-                                let botInfoPromises = [];
 
-                                for (let [index, token] of userTokens.entries()) {
-                                    const botIntents = [
-                                        GatewayIntentBits.Guilds,
-                                        GatewayIntentBits.GuildVoiceStates,
-                                        GatewayIntentBits.GuildMessages,
-                                        GatewayIntentBits.MessageContent,
-                                    ];
-                                    const bot = new Client({ intents: botIntents });
+                                const offServerInfos = userTokens.map((token, index) => {
+                                    try {
+                                        /* bot is "off-server" if its stored Server != this guild */
+                                        if (token.Server === userGuildId) return null;
+                                        const clientId = Buffer.from(token.token.split('.')[0], 'base64').toString();
+                                        return `\`Bot #${index + 1}\` https://discord.com/api/oauth2/authorize?client_id=${clientId}&permissions=0&scope=bot`;
+                                    } catch (e) {
+                                        return null;
+                                    }
+                                }).filter(Boolean);
 
-                                    botInfoPromises.push(new Promise(async (resolve, reject) => {
-                                        try {
-                                            await bot.login(token.token);
-                                            const serverId = token.Server;
-                                            const guild = bot.guilds.cache.get(serverId);
-
-                                            if (!guild) {
-                                                const botInfo = `\`${bot.user?.username || "غير معروف"}\` https://discord.com/api/oauth2/authorize?client_id=${bot.user?.id}&permissions=0&scope=bot`;
-                                                resolve(botInfo);
+                                const disabledComponents2 = interaction.message.components.map(row => {
+                                    return new ActionRowBuilder().addComponents(
+                                        row.components.map(component => {
+                                            if (component.type === ComponentType.Button) {
+                                                return ButtonBuilder.from(component).setDisabled(true);
+                                            } else if (component.type === ComponentType.StringSelect) {
+                                                return StringSelectMenuBuilder.from(component).setDisabled(true);
                                             } else {
-                                                resolve(null);
+                                                return component;
                                             }
-                                        } catch (err) {
-                                            reject(err);
-                                        }
-                                    }));
+                                        })
+                                    );
+                                });
+
+                                offServerInfos.forEach((botInfo, index) => {
+                                    interaction.user.send(`**🔗 : رابط بوت الميوزك رقم ${index + 1} :**\n${botInfo}`)
+                                        .catch((err) => {
+                                            console.error("حدث خطأ أثناء إرسال الرابط:", err);
+                                        });
+                                    totalSentBots++;
+                                });
+
+                                db.set(`Off-serverlinks-${message.author.id}`, currentTime);
+
+                                if (totalSentBots > 0) {
+                                    interaction.followUp({ content: `تم إرسال **${totalSentBots}** من الروابط إلى الخاص.` });
+                                } else {
+                                    interaction.followUp({ content: `جميع البوتات موجودة بالسيرفر بالفعل.` });
                                 }
-
-                                Promise.all(botInfoPromises)
-                                    .then(botInfos => {
-                                        botInfos.forEach((botInfo, index) => {
-                                            if (botInfo) {
-                                                interaction.user.send(`**🔗 : رابط بوت الميوزك رقم ${index + 1} :**\n${botInfo}`)
-                                                    .catch((err) => {
-                                                        console.error("حدث خطأ أثناء إرسال الرابط:", err);
-                                                    });
-                                                totalSentBots++;
-                                            }
-                                        });
-
-                                        db.set(`Off-serverlinks-${message.author.id}`, currentTime);
-
-                                        const disabledComponents = interaction.message.components.map(row => {
-                                            return new ActionRowBuilder().addComponents(
-                                                row.components.map(component => {
-                                                    if (component.type === ComponentType.Button) {
-                                                        return ButtonBuilder.from(component).setDisabled(true);
-                                                    } else if (component.type === ComponentType.StringSelect) {
-                                                        return StringSelectMenuBuilder.from(component).setDisabled(true);
-                                                    } else {
-                                                        return component;
-                                                    }
-                                                })
-                                            );
-                                        });
-
-
-                                        if (totalSentBots > 0) {
-                                            interaction.followUp({ content: `تم إرسال **${totalSentBots}** من الروابط إلى الخاص.` });
-                                            interaction.editReply({ components: disabledComponents });
-
-                                        } else {
-                                            interaction.followUp({ content: `جميع البوتات موجودة بالسيرفر بالفعل.` });
-                                            interaction.editReply({ components: disabledComponents });
-                                        }
-                                    })
-                                    .catch(err => {
-                                        console.error("حدث خطأ أثناء جمع روابط البوتات:", err);
-                                        interaction.followUp({ content: `\`\`\`.حدث خطأ، يرجى التواصل مع الدعم الفني\`\`\`` });
-                                        interaction.editReply({ components: disabledComponents });
-
-                                    });
+                                interaction.editReply({ components: disabledComponents2 });
                             }
 
 
@@ -475,20 +425,20 @@ module.exports = {
                             ]
                         });
 
-						const filter = (i) => i.user.id === message.author.id;
-						const collector = replyMessage.createMessageComponentCollector({ filter, time: 60000 });
+                                                const filter = (i) => i.user.id === message.author.id;
+                                                const collector = replyMessage.createMessageComponentCollector({ filter, time: 60000 });
 
-						collector.on('collect', async (interaction) => {
-							// زر الإلغاء
-							if (interaction.isButton() && interaction.customId === 'cancel') {
-								await interaction.deferUpdate().catch(() => {});
-								await interaction.message.delete().catch(() => {});
-								collector.stop('cancel');
-								return;
-							}
+                                                collector.on('collect', async (interaction) => {
+                                                        // زر الإلغاء
+                                                        if (interaction.isButton() && interaction.customId === 'cancel') {
+                                                                await interaction.deferUpdate().catch(() => {});
+                                                                await interaction.message.delete().catch(() => {});
+                                                                collector.stop('cancel');
+                                                                return;
+                                                        }
 
-							if (!interaction.isStringSelectMenu() || interaction.customId !== 'vipOptions') return;
-							const selectedOption = interaction.values[0];
+                                                        if (!interaction.isStringSelectMenu() || interaction.customId !== 'vipOptions') return;
+                                                        const selectedOption = interaction.values[0];
 
                             if (selectedOption === 'editbuttons') {
 
@@ -1340,20 +1290,20 @@ module.exports = {
                             ]
                         });
 
-						const filter = (i) => i.user.id === message.author.id;
-						const collector = replyMessage.createMessageComponentCollector({ filter, time: 60000 });
+                                                const filter = (i) => i.user.id === message.author.id;
+                                                const collector = replyMessage.createMessageComponentCollector({ filter, time: 60000 });
 
-						collector.on('collect', async (interaction) => {
-							// زر الإلغاء
-							if (interaction.isButton() && interaction.customId === 'cancel') {
-								await interaction.deferUpdate().catch(() => {});
-								await interaction.message.delete().catch(() => {});
-								collector.stop('cancel');
-								return;
-							}
+                                                collector.on('collect', async (interaction) => {
+                                                        // زر الإلغاء
+                                                        if (interaction.isButton() && interaction.customId === 'cancel') {
+                                                                await interaction.deferUpdate().catch(() => {});
+                                                                await interaction.message.delete().catch(() => {});
+                                                                collector.stop('cancel');
+                                                                return;
+                                                        }
 
-							if (!interaction.isStringSelectMenu() || interaction.customId !== 'vipOptions') return;
-							const selectedOption = interaction.values[0];
+                                                        if (!interaction.isStringSelectMenu() || interaction.customId !== 'vipOptions') return;
+                                                        const selectedOption = interaction.values[0];
                             if (selectedOption === 'YouTube') {
                                 const lastClaimTime = await db.get(`YouTubeeditbuttons_${message.author.id}`) || 0;
                                 const currentTime = Date.now();

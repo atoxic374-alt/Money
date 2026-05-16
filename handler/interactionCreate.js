@@ -1,9 +1,14 @@
 const fs   = require('fs');
 const cfg  = require(`${process.cwd()}/settings/config`);
-const { EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
-const ms   = require('ms');
+const {
+  EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle
+} = require('discord.js');
+const ms = require('ms');
 
 const THUMB = 'https://cdn.discordapp.com/attachments/1091536665912299530/1316233635464220803/512-512-max.png?ex=675a4d99&is=6758fc19&hm=352d005827ec0252e09be31a939f3c2f1abb3c8a0d660f20012ac80a2bc62b12&';
+
+/* ── helpers ──────────────────────────────────────────────────────────────── */
 
 function parseDuration(input) {
   if (!input || typeof input !== 'string' || !input.trim()) return null;
@@ -37,14 +42,20 @@ function randCode(len) {
   return o;
 }
 
-function errEmbed(interaction, desc) {
-  return new EmbedBuilder()
-    .setTitle('Error')
-    .setDescription(desc)
-    .setFooter({ text: interaction.guild.name + ' | Subscriptions', iconURL: interaction.guild.iconURL({ dynamic: true }) })
-    .setColor('#E74C3C')
-    .setTimestamp();
+function errReply(interaction, desc) {
+  return interaction.editReply({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle('Error')
+        .setDescription(desc)
+        .setFooter({ text: interaction.guild.name + ' | Subscriptions', iconURL: interaction.guild.iconURL({ dynamic: true }) })
+        .setColor('#E74C3C')
+        .setTimestamp()
+    ]
+  });
 }
+
+/* ── module ───────────────────────────────────────────────────────────────── */
 
 module.exports = {
   name: 'interactionCreate',
@@ -61,8 +72,9 @@ module.exports = {
         });
       }
 
+      /* pass the original message ID so we can update it on submit */
       const modal = new ModalBuilder()
-        .setCustomId('addsub_modal')
+        .setCustomId('addsub_modal:' + interaction.message.id)
         .setTitle('Add Subscription');
 
       modal.addComponents(
@@ -81,7 +93,7 @@ module.exports = {
         new ActionRowBuilder().addComponents(
           new TextInputBuilder()
             .setCustomId('bots_count').setLabel('Bots Count')
-            .setPlaceholder('1')
+            .setPlaceholder('3')
             .setStyle(TextInputStyle.Short).setMinLength(1).setMaxLength(2).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
@@ -96,103 +108,173 @@ module.exports = {
     }
 
     /* ── Modal submit ────────────────────────────────────────────────────── */
-    if (interaction.isModalSubmit() && interaction.customId === 'addsub_modal') {
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('addsub_modal:')) {
 
       if (!cfg.owners.includes(interaction.user.id)) return;
-      await interaction.deferReply({ ephemeral: false });
+
+      const originalMsgId = interaction.customId.split(':')[1];
+
+      /* ephemeral defer — errors shown privately, success updates original msg */
+      await interaction.deferReply({ ephemeral: true });
 
       const userId   = interaction.fields.getTextInputValue('user_id').trim();
       const serverId = interaction.fields.getTextInputValue('server_id').trim();
       const countRaw = interaction.fields.getTextInputValue('bots_count').trim();
       const durRaw   = interaction.fields.getTextInputValue('duration').trim();
 
-      /* validate user id */
+      /* ── validate user id ───────────────────────────────────────────────── */
       if (!/^\d{17,20}$/.test(userId))
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**ايدي المستخدم يجب ان يكون رقما من 17 الى 20 خانة.**')] });
+        return errReply(interaction, '**ايدي المستخدم يجب ان يكون رقما من 17 الى 20 خانة.**');
 
       let targetUser;
       try { targetUser = await interaction.client.users.fetch(userId); }
-      catch { return interaction.editReply({ embeds: [errEmbed(interaction, '**لم يتم العثور على المستخدم. تاكد من صحة الايدي.**')] }); }
+      catch { return errReply(interaction, '**لم يتم العثور على المستخدم. تاكد من صحة الايدي.**'); }
 
-      /* validate server id */
+      /* ── validate server id ─────────────────────────────────────────────── */
       if (!/^\d{17,20}$/.test(serverId))
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**ايدي السيرفر يجب ان يكون رقما من 17 الى 20 خانة.**')] });
+        return errReply(interaction, '**ايدي السيرفر يجب ان يكون رقما من 17 الى 20 خانة.**');
 
-      /* validate bots count */
+      /* ── validate bots count ────────────────────────────────────────────── */
       const count = parseInt(countRaw, 10);
       if (isNaN(count) || count <= 0)
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**يرجى ادخال عدد صحيح وموجب للبوتات.**')] });
+        return errReply(interaction, '**يرجى ادخال عدد صحيح وموجب للبوتات.**');
 
       const bots = readJson('./settings/bots.json', []);
       if (!Array.isArray(bots))
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**حدث خطا اثناء قراءة ملف البوتات.**')] });
+        return errReply(interaction, '**حدث خطا اثناء قراءة ملف البوتات.**');
       if (bots.length === 0)
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**لا توجد بوتات متاحة حاليا. اضف بوتات اولا عبر** `madd-tokens`**.**')] });
+        return errReply(interaction, '**لا توجد بوتات متاحة حاليا. اضف بوتات اولا عبر** `madd-tokens`**.**');
       if (count > bots.length)
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**البوتات المطلوبة** `(' + count + ')` **اكبر من المتاح** `(' + bots.length + ')`**. اضف المزيد اولا.**')] });
+        return errReply(interaction, '**البوتات المطلوبة** `(' + count + ')` **اكبر من المتاح** `(' + bots.length + ')`**. اضف المزيد اولا.**');
 
-      /* validate duration */
+      /* ── duplicate check: same user + same server ───────────────────────── */
+      const timeArr = readJson('./settings/time.json', []);
+      if (!Array.isArray(timeArr))
+        return errReply(interaction, '**حدث خطا اثناء قراءة بيانات الاشتراكات.**');
+
+      const alreadyExists = timeArr.find(function(e) {
+        return e.user === userId && e.server === serverId && e.expirationTime > Date.now();
+      });
+      if (alreadyExists)
+        return errReply(interaction,
+          '**هذا المستخدم لديه اشتراك نشط على نفس السيرفر بالفعل** `(' + alreadyExists.code + ')`**.**\n' +
+          '**استخدم** `madd-time` **لتعديل مدة الاشتراك الحالي بدلا من انشاء جديد.**'
+        );
+
+      /* ── validate duration ──────────────────────────────────────────────── */
       const dur = parseDuration(durRaw);
       if (!dur)
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**صيغة الوقت** `' + durRaw + '` **غير صحيحة. استخدم مثلا:** `30d` **او** `12h` **او** `60m`**.**')] });
+        return errReply(interaction,
+          '**صيغة الوقت** `' + durRaw + '` **غير صحيحة. استخدم مثلا:** `30d` **او** `12h` **او** `60m`**.**'
+        );
 
-      /* build subscription */
-      const formatted  = formatDuration(dur);
-      const expireTime = Date.now() + dur;
-      const code       = randCode(5);
-      const expireStr  = new Date(expireTime).toLocaleString('ar-EG', { timeZone: 'Asia/Riyadh' });
+      /* ── build 3 subscription groups ────────────────────────────────────── */
+      const formatted   = formatDuration(dur);
+      const expireTime  = Date.now() + dur;
+      const expireStr   = new Date(expireTime).toLocaleString('ar-EG', { timeZone: 'Asia/Riyadh' });
+      const numGroups   = Math.min(3, count);
 
-      /* save time.json */
-      try {
-        const arr = readJson('./settings/time.json', []);
-        if (!Array.isArray(arr)) throw new Error('not array');
-        arr.push({ user: userId, server: serverId, botsCount: count, subscriptionTime: durRaw, expirationTime: expireTime, code: '#' + code });
-        fs.writeFileSync('./settings/time.json', JSON.stringify(arr, null, 2));
-      } catch (e) {
-        console.error('> time.json write error:', e);
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**حدث خطا اثناء حفظ بيانات الاشتراك. حاول مرة اخرى.**')] });
+      /* distribute bots as evenly as possible across groups */
+      const groupSizes = [];
+      for (let g = 0; g < numGroups; g++) {
+        groupSizes.push(Math.floor(count / numGroups) + (g < count % numGroups ? 1 : 0));
       }
 
-      /* assign tokens */
-      const given = bots.splice(0, count);
-      let tokens  = readJson('./settings/tokens.json', []);
+      const codes       = [];
+      for (let g = 0; g < numGroups; g++) codes.push(randCode(5));
+
+      /* ── save time.json ──────────────────────────────────────────────────── */
+      try {
+        for (let g = 0; g < numGroups; g++) {
+          timeArr.push({
+            user: userId,
+            server: serverId,
+            botsCount: groupSizes[g],
+            subscriptionTime: durRaw,
+            expirationTime: expireTime,
+            code: '#' + codes[g]
+          });
+        }
+        fs.writeFileSync('./settings/time.json', JSON.stringify(timeArr, null, 2));
+      } catch (e) {
+        console.error('> time.json write error:', e);
+        return errReply(interaction, '**حدث خطا اثناء حفظ بيانات الاشتراك. حاول مرة اخرى.**');
+      }
+
+      /* ── assign tokens per group ─────────────────────────────────────────── */
+      const givenTokens = bots.splice(0, count);
+      let tokens = readJson('./settings/tokens.json', []);
       if (!Array.isArray(tokens)) tokens = [];
-      given.forEach(function(b) {
-        tokens.push({ token: b.token, Server: serverId, channel: null, chat: null, status: null, client: userId, code: '#' + code });
-      });
+
+      let offset = 0;
+      for (let g = 0; g < numGroups; g++) {
+        const groupBots = givenTokens.slice(offset, offset + groupSizes[g]);
+        offset += groupSizes[g];
+        groupBots.forEach(function(b) {
+          tokens.push({
+            token: b.token, Server: serverId, channel: null,
+            chat: null, status: null, client: userId, code: '#' + codes[g]
+          });
+        });
+      }
+
       try {
         fs.writeFileSync('./settings/tokens.json', JSON.stringify(tokens, null, 2));
         fs.writeFileSync('./settings/bots.json',   JSON.stringify(bots,   null, 2));
       } catch (e) {
         console.error('> tokens/bots write error:', e);
-        return interaction.editReply({ embeds: [errEmbed(interaction, '**حدث خطا اثناء حفظ التوكنات.**')] });
+        return errReply(interaction, '**حدث خطا اثناء حفظ التوكنات.**');
       }
 
-      /* reply embed */
+      /* ── build description lines for each group ──────────────────────────── */
+      let descLines = '';
+      for (let g = 0; g < numGroups; g++) {
+        descLines += '`' + (g + 1) + '` : `Music x' + groupSizes[g] + ' (SuID #' + codes[g] + ') : ' + formatted + '` <@' + userId + '>\n';
+      }
+
+      /* ── success embed ───────────────────────────────────────────────────── */
       const successEmbed = new EmbedBuilder()
         .setTitle('Subscription Added')
         .setThumbnail(THUMB)
-        .setDescription('> **بواسطّة :** <@' + interaction.user.id + '>\n`1` : `Music x' + count + ' (SuID #' + code + ') : ' + formatted + '` <@' + userId + '>')
+        .setDescription('> **بواسطّة :** <@' + interaction.user.id + '>\n' + descLines)
         .addFields(
-          { name: 'Server',   value: '`' + serverId  + '`', inline: true },
-          { name: 'Duration', value: '`' + formatted  + '`', inline: true },
-          { name: 'Expires',  value: '`' + expireStr  + '`', inline: true }
+          { name: 'Server',     value: '`' + serverId  + '`',   inline: true },
+          { name: 'Duration',   value: '`' + formatted  + '`',  inline: true },
+          { name: 'Expires',    value: '`' + expireStr  + '`',  inline: true },
+          { name: 'Packages',   value: '`' + numGroups + ' SuIDs`', inline: true },
+          { name: 'Total Bots', value: '`' + count + '`',       inline: true }
         )
         .setFooter({ text: interaction.guild.name + ' | Timer', iconURL: interaction.guild.iconURL({ dynamic: true }) })
         .setColor(cfg.Colors)
         .setTimestamp();
 
-      await interaction.editReply({ embeds: [successEmbed] });
+      /* ── update the original button message (disable button + new embed) ─── */
+      try {
+        const origMsg = await interaction.channel.messages.fetch(originalMsgId);
+        const disabledRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('open_addsub_modal')
+            .setLabel('Add Subscription')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(true)
+        );
+        await origMsg.edit({ embeds: [successEmbed], components: [disabledRow] });
+      } catch (e) {
+        console.error('> failed to update original message:', e.message);
+      }
 
-      /* DM */
+      /* delete the ephemeral "thinking" indicator */
+      await interaction.deleteReply().catch(function() {});
+
+      /* ── DM to user ──────────────────────────────────────────────────────── */
       const dmEmbed = new EmbedBuilder()
         .setTitle('New Subscription')
         .setThumbnail(THUMB)
         .setDescription(
           '> **الاسم :** <@' + userId + '>\n' +
-          '> **الاشتراك :** `Music x' + count + '` `(SuID #' + code + ')`\n' +
           '> **المدة :** `' + formatted + '`\n' +
-          '> **ينتهي في :** `' + expireStr + '`'
+          '> **ينتهي في :** `' + expireStr + '`\n\n' +
+          descLines
         )
         .setFooter({ text: interaction.guild.name + ' | Timer', iconURL: interaction.guild.iconURL({ dynamic: true }) })
         .setColor(cfg.Colors)
@@ -201,7 +283,7 @@ module.exports = {
       targetUser.send({ content: '> <@' + userId + '>', embeds: [dmEmbed] })
         .catch(function(e) { console.error('> DM failed to ' + targetUser.tag + ':', e.message); });
 
-      /* log channel */
+      /* ── log channel ─────────────────────────────────────────────────────── */
       if (!cfg.logChannelId) return;
       const logCh = interaction.client.channels.cache.get(cfg.logChannelId);
       if (!logCh) return;
@@ -209,7 +291,7 @@ module.exports = {
       const logEmbed = new EmbedBuilder()
         .setTitle('Subscription Added')
         .setThumbnail(THUMB)
-        .setDescription('> **بواسطّة :** <@' + interaction.user.id + '>\n`1` : `Music x' + count + ' (SuID #' + code + ') : ' + formatted + '` <@' + userId + '>')
+        .setDescription('> **بواسطّة :** <@' + interaction.user.id + '>\n' + descLines)
         .setFooter({ text: interaction.guild.name + ' | Timer', iconURL: interaction.guild.iconURL({ dynamic: true }) })
         .setColor(cfg.Colors)
         .setTimestamp();
