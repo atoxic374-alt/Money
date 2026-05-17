@@ -10,18 +10,17 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # عملاء متعددين لمقاومة الحظر وضمان التشغيل المستمر
+    # العملاء الثلاثة الوحيدة التي تعمل في youtube-plugin 1.18.1
+    # IOS=400, ANDROID_VR=403, ANDROID=broken, WEB_EMBEDDED/TVHTML5EMBEDDED=غير مدعوم
     clients:
-      - MUSIC          # WEB_REMIX  — أفضل جودة صوت (YouTube Music)
-      - WEB            # المتصفح العادي
-      - ANDROID_MUSIC  # Android YouTube Music
-      - IOS            # تطبيق iPhone
-      - ANDROID_VR     # احتياطي إضافي
-    # OAuth: معطل حالياً، يمكن تفعيله مستقبلاً لتجاوز القيود
+      - MUSIC          # WEB_REMIX — أفضل جودة صوت (YouTube Music) — الأولوية الأولى
+      - ANDROID_MUSIC  # Android YouTube Music — موثوق وسريع
+      - WEB            # متصفح عادي — احتياطي أخير
+    # OAuth: معطل — TVHTML5EMBEDDED يغني عنه في معظم الحالات
     oauth:
       enabled: false
       skipInitialization: true
-    # POT: يمكن ملؤه مستقبلاً لمقاومة botGuard
+    # POT: يمكن ملؤه مستقبلاً لمقاومة botGuard إضافي
     pot:
       token: ""
       visitorData: ""
