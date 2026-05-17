@@ -1,7 +1,7 @@
 const { TwitchUrl, statuses } = require(`${process.cwd()}/settings/config`);
 
 module.exports = {
-  name: 'ready',
+  name: 'clientReady',
     // discord.js event handler option: emit once
   once: true,
   async execute(client) {

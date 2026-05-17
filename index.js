@@ -64,7 +64,7 @@ require('./manager.js');
 
 const { fixDuplicateSubs } = require('./handler/fixDuplicateSubs');
 
-client.once('ready', () => {
+client.once('clientReady', () => {
     // Fix any duplicate subscriptions left from before the dedup lock
     const fixReports = fixDuplicateSubs();
     fixReports.forEach(function(r) {
