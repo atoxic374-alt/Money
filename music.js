@@ -31,6 +31,51 @@ const nowPlayingMessages = new Collection();
 const voiceReconnectState = new Collection();
 const VOICE_RETRY_BASE_MS = 15000;
 const VOICE_RETRY_MAX_MS = 300000;
+const SEARCH_CONCURRENCY = Math.max(1, Number(process.env.MUSIC_SEARCH_CONCURRENCY || 4));
+const SEARCH_RETRY_DELAY_MS = Math.max(0, Number(process.env.MUSIC_SEARCH_RETRY_DELAY_MS || 600));
+const NOW_PLAYING_UPDATE_MS = Math.max(15000, Number(process.env.MUSIC_NOW_PLAYING_UPDATE_MS || 30000));
+const ENABLE_ARTIST_RECOMMENDATIONS = process.env.MUSIC_ARTIST_RECOMMENDATIONS === 'true';
+const DEFAULT_SEARCH_SOURCE = process.env.MUSIC_DEFAULT_SEARCH_SOURCE || 'ytsearch';
+const FALLBACK_SEARCH_SOURCES = (process.env.MUSIC_FALLBACK_SOURCES || 'ytmsearch,scsearch')
+    .split(',')
+    .map(source => source.trim())
+    .filter(Boolean);
+
+let activeSearches = 0;
+const pendingSearches = [];
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function runSearchLimited(task) {
+    return new Promise((resolve, reject) => {
+        pendingSearches.push({ task, resolve, reject });
+        drainSearchQueue();
+    });
+}
+
+function drainSearchQueue() {
+    while (activeSearches < SEARCH_CONCURRENCY && pendingSearches.length > 0) {
+        const { task, resolve, reject } = pendingSearches.shift();
+        activeSearches += 1;
+        Promise.resolve()
+            .then(task)
+            .then(resolve, reject)
+            .finally(() => {
+                activeSearches -= 1;
+                drainSearchQueue();
+            });
+    }
+}
+
+function uniqueSources(sources) {
+    return [...new Set(sources.filter(Boolean))];
+}
+
+function looksLikeUrl(query) {
+    return /^https?:\/\//i.test(String(query || '').trim());
+}
 
 function getVoiceRetryDelay(attempts) {
     return Math.min(VOICE_RETRY_BASE_MS * Math.pow(2, Math.max(0, attempts - 1)), VOICE_RETRY_MAX_MS);
@@ -88,7 +133,7 @@ module.exports = {
         runningBots.set(token, TrueMusic);
 
         TrueMusic.poru = new Poru(TrueMusic, hostConfig, {
-            defaultPlatform: 'ytsearch',
+            defaultPlatform: DEFAULT_SEARCH_SOURCE,
             reconnectTries: 30,           // زيادة المحاولات لضمان الاسترداد تحت الضغط
             reconnectTimeout: 8000,       // 8 ثوانٍ بدلاً من 3 — يمنع reconnect storms
             library: 'discord.js',
@@ -96,6 +141,31 @@ module.exports = {
             resumeKey: `poru-${idbot}`,
             resumeTimeout: 120,           // دقيقتان لإعادة الاتصال قبل إلغاء الجلسة
         });
+
+        async function resolveLimited(options) {
+            return runSearchLimited(() => TrueMusic.poru.resolve(options));
+        }
+
+        async function resolveWithFallback(query, preferredSource = DEFAULT_SEARCH_SOURCE) {
+            const urlQuery = looksLikeUrl(query);
+            const sources = urlQuery ? [undefined] : uniqueSources([preferredSource, ...FALLBACK_SEARCH_SOURCES]);
+            let lastError = null;
+
+            for (const source of sources) {
+                try {
+                    const result = await resolveLimited(source ? { query, source } : { query });
+                    if (result?.tracks?.length > 0) return result;
+                } catch (error) {
+                    lastError = error;
+                    console.warn(`[Search] ${source || 'direct'} failed for "${String(query).slice(0, 80)}": ${error.message}`);
+                }
+
+                if (SEARCH_RETRY_DELAY_MS > 0) await sleep(SEARCH_RETRY_DELAY_MS);
+            }
+
+            if (lastError) throw lastError;
+            return null;
+        }
 
         const patchPoruRestJson = (node) => {
             if (!node?.rest || node.rest.__moneyJsonPatch) return;
@@ -208,7 +278,7 @@ module.exports = {
             // YouTube فشل → جرب SoundCloud كاحتياط
             if (isYouTube && title && title !== 'Unknown') {
                 try {
-                    const fallback = await TrueMusic.poru.resolve({ query: title, source: 'scsearch' });
+                    const fallback = await resolveLimited({ query: title, source: 'scsearch' });
                     if (fallback?.tracks?.length > 0) {
                         const ft = fallback.tracks[0];
                         ft.info.requester = track.info.requester;
@@ -673,9 +743,7 @@ module.exports = {
       }
 
       const search = `${currentTrack.info.title} next autoplay`;
-      const res = await TrueMusic.poru.resolve({
-        query: search,
-      });
+      const res = await resolveWithFallback(search);
 
       if (!res || res.tracks.length === 0) {
         if (player.isPlaying) player.stop();
@@ -779,7 +847,7 @@ module.exports = {
           if (!p || !p.currentTrack) { clearInterval(intervalId); nowPlayingMessages.delete(player.guildId); return; }
           try { await sentMsg.edit({ embeds: [makeEmbed(p.position || 0)] }); }
           catch { clearInterval(intervalId); nowPlayingMessages.delete(player.guildId); }
-        }, 15000);
+        }, NOW_PLAYING_UPDATE_MS);
 
         nowPlayingMessages.set(player.guildId, { message: sentMsg, intervalId });
       } catch { /* silent */ }
@@ -1027,15 +1095,7 @@ module.exports = {
                     const searchSource = tokenObj.source || 'ytsearch';
 
                     // جرب المصدر الأساسي، ثم احتياط SoundCloud إذا لم يُعطِ نتائج
-                    let res = await TrueMusic.poru.resolve({ query: song, source: searchSource }).catch(() => null);
-
-                    // إذا فشل البحث في يوتيوب جرب ytmsearch، ثم scsearch
-                    if ((!res || !res.tracks || res.tracks.length === 0) && searchSource === 'ytsearch') {
-                        res = await TrueMusic.poru.resolve({ query: song, source: 'ytmsearch' }).catch(() => null);
-                    }
-                    if (!res || !res.tracks || res.tracks.length === 0) {
-                        res = await TrueMusic.poru.resolve({ query: song, source: 'scsearch' }).catch(() => null);
-                    }
+                    let res = await resolveWithFallback(song, searchSource).catch(() => null);
 
                     if (!res || !res.tracks || res.tracks.length === 0) {
                         const embed = new EmbedBuilder()
@@ -1111,31 +1171,33 @@ module.exports = {
                         const filterRow     = buildFilterRow();
                         const replyComponents = [row1, row2, filterRow];
 
-                        // fetch artist popular songs
-                        try {
-                            const artistRes   = await TrueMusic.poru.resolve({ query: `${artist} songs`, source: 'ytsearch' });
-                            const artistTracks = artistRes?.tracks?.filter(t => t.info.uri !== track.info.uri)?.slice(0, 8) || [];
-                            if (artistTracks.length > 0) {
-                                artistTracksCache.set(message.guild.id, artistTracks);
-                                const shortArtist = artist.length > 20 ? artist.slice(0, 17) + '...' : artist;
-                                const artistRow   = new ActionRowBuilder().addComponents(
-                                    new StringSelectMenuBuilder()
-                                        .setCustomId('artist_songs')
-                                        .setPlaceholder(`🎵 أغاني مشهورة لـ ${shortArtist}`)
-                                        .addOptions(artistTracks.map((t, i) => {
-                                            const m = String(Math.floor(t.info.length / 60000));
-                                            const s = String(Math.floor((t.info.length % 60000) / 1000)).padStart(2, '0');
-                                            return {
-                                                label: t.info.title.length > 99 ? t.info.title.slice(0, 96) + '...' : t.info.title,
-                                                value: i.toString(),
-                                                description: `${m}:${s}`,
-                                                emoji: '🎶'
-                                            };
-                                        }))
-                                );
-                                replyComponents.push(artistRow);
-                            }
-                        } catch { /* silent */ }
+                        // fetch artist popular songs only when explicitly enabled; every extra search matters at 1000+ bots.
+                        if (ENABLE_ARTIST_RECOMMENDATIONS) {
+                            try {
+                                const artistRes   = await resolveLimited({ query: `${artist} songs`, source: DEFAULT_SEARCH_SOURCE });
+                                const artistTracks = artistRes?.tracks?.filter(t => t.info.uri !== track.info.uri)?.slice(0, 8) || [];
+                                if (artistTracks.length > 0) {
+                                    artistTracksCache.set(message.guild.id, artistTracks);
+                                    const shortArtist = artist.length > 20 ? artist.slice(0, 17) + '...' : artist;
+                                    const artistRow   = new ActionRowBuilder().addComponents(
+                                        new StringSelectMenuBuilder()
+                                            .setCustomId('artist_songs')
+                                            .setPlaceholder(`🎵 أغاني مشهورة لـ ${shortArtist}`)
+                                            .addOptions(artistTracks.map((t, i) => {
+                                                const m = String(Math.floor(t.info.length / 60000));
+                                                const s = String(Math.floor((t.info.length % 60000) / 1000)).padStart(2, '0');
+                                                return {
+                                                    label: t.info.title.length > 99 ? t.info.title.slice(0, 96) + '...' : t.info.title,
+                                                    value: i.toString(),
+                                                    description: `${m}:${s}`,
+                                                    emoji: '🎶'
+                                                };
+                                            }))
+                                    );
+                                    replyComponents.push(artistRow);
+                                }
+                            } catch { /* silent */ }
+                        }
 
                         const sentMsg = await message.reply({
                             embeds: [buildNowPlayingEmbed(track, 0)],
@@ -1567,7 +1629,7 @@ module.exports = {
                     collector.stop();
 
                     try {
-                        const result = await TrueMusic.poru.resolve({ query: searchQuery, source: selectedSource });
+                        const result = await resolveLimited({ query: searchQuery, source: selectedSource });
 
                         if (!result || !result.tracks.length) {
                             return interaction.update({ content: `*No results found on ${selectedSource}.*`, components: [] });

@@ -37,7 +37,7 @@
 npm run lavalink
 ```
 
-المشغل سيحمّل `Lavalink.jar` الرسمي داخل `lavalink-server/data/` أول مرة، ثم يعيد استخدامه بعد ذلك. إعداد اتصال البوت موجود في `settings/host.json` ويشير إلى `127.0.0.1:2333`.
+المشغل سيحمّل `Lavalink.jar` الرسمي في جذر المشروع أول مرة، ثم يعيد استخدامه بعد التحقق من الإصدار. إعداد اتصال البوت موجود في `settings/host.json` ويشير إلى `127.0.0.1:2333`.
 
 ### تشغيل البوت
 
@@ -57,8 +57,66 @@ npm run start:all
 على Replit تأكد أن `replit.nix` يحتوي Java 21 و FFmpeg. يمكن تقليل الذاكرة عبر المتغير:
 
 ```bash
-LAVALINK_MAX_RAM=256m npm run lavalink
+LAVALINK_JAVA_MAX_RAM=512m npm run lavalink
 ```
+
+
+## إعداد Lavalink الحديث (2026)
+
+راجعنا إعداد Lavalink بناءً على الحالة الحديثة لمشاريع Lavalink الرسمية وملحقات GitHub الشائعة. الخلاصة العملية داخل هذا المشروع:
+
+* يستخدم `scripts/start-lavalink.js` Lavalink v4 تلقائيًا، ويتحقق من Java 17+، ويحاول تنزيل آخر إصدار مستقر عند التشغيل.
+* يستخدم `application.yml` ملحق `youtube-source` بدل مصدر YouTube القديم، ولذلك يجب إبقاء `lavalink.server.sources.youtube` على `false`.
+* يستخدم LavaSrc كمصدر إضافي للمنصات والبحث، مع إبقاء المصادر التي تحتاج مفاتيح API مغلقة افتراضيًا حتى لا تفشل وقت التشغيل.
+* لا تستخدم المشروع لتجاوز شروط YouTube أو Discord. إن واجهت YouTube رسائل bot/rate-limit فالحل الآمن هو تقليل الضغط، تفعيل OAuth الرسمي بحذر لحساب مخصص، أو الاعتماد على مصادر مرخصة/مدعومة مثل SoundCloud وروابط HTTP المباشرة المصرح بها.
+
+### متغيرات مهمة للجودة والأداء
+
+```bash
+# آخر إصدار مستقر تلقائيًا، أو ثبّت إصدارًا محددًا وقت الحاجة
+LAVALINK_VERSION=latest
+YOUTUBE_PLUGIN_VERSION=latest
+LAVASRC_PLUGIN_VERSION=latest
+
+# جودة أعلى مع استهلاك CPU أعلى
+LAVALINK_OPUS_QUALITY=10
+LAVALINK_RESAMPLING_QUALITY=MEDIUM
+LAVALINK_BUFFER_DURATION_MS=1000
+LAVALINK_FRAME_BUFFER_DURATION_MS=5000
+
+# تقليل ضغط آلاف البوتات على البحث و Discord edits
+MUSIC_SEARCH_CONCURRENCY=4
+MUSIC_SEARCH_RETRY_DELAY_MS=600
+MUSIC_NOW_PLAYING_UPDATE_MS=30000
+MUSIC_ARTIST_RECOMMENDATIONS=false
+
+# ترتيب البحث: يوتيوب ثم YouTube Music ثم SoundCloud كاحتياط
+MUSIC_DEFAULT_SEARCH_SOURCE=ytsearch
+MUSIC_FALLBACK_SOURCES=ytmsearch,scsearch
+```
+
+### YouTube بطريقة مستقرة ومتوافقة
+
+* أبقِ عملاء YouTube على العملاء المستقرين الموجودة في `application.yml`: `WEB`, `WEBEMBEDDED`, `MWEB`, `TVHTML5_SIMPLY`.
+* لا تجمع بين `YOUTUBE_OAUTH_*` و `YOUTUBE_POT_*` في نفس الوقت؛ الملحق نفسه يوضح أن كل طريقة منفصلة وليست حلًا مضمونًا.
+* إن فعلت OAuth، استخدم التدفق الرسمي فقط، ولا تستخدم حسابك الأساسي، وتوقع rate limits في الضغط العالي.
+* للمنصات الكبيرة، شغّل أكثر من عقدة Lavalink مستقلة، وضعها في `settings/host.json`، واجعل كل عقدة على VPS/منطقة مختلفة مع مراقبة `/v4/stats` و Prometheus.
+
+مثال `settings/host.json` متعدد العقد:
+
+```json
+[
+  { "host": "10.0.0.10", "port": 2333, "secure": false, "password": "strong-password" },
+  { "host": "10.0.0.11", "port": 2333, "secure": false, "password": "strong-password" }
+]
+```
+
+### ملاحظات تشغيل آلاف البوتات
+
+* اجعل `MUSIC_ARTIST_RECOMMENDATIONS=false` في الإنتاج؛ تفعيلها يضيف بحثًا إضافيًا لكل تشغيل.
+* لا تجعل تحديث رسالة Now Playing أقل من 15 ثانية. الافتراضي هنا 30 ثانية لتقليل rate limits.
+* زِد `MUSIC_SEARCH_CONCURRENCY` تدريجيًا فقط بعد مراقبة CPU/RAM و `/v4/stats`.
+* اضبط `LAVALINK_JAVA_MAX_RAM` حسب حجم العقدة؛ ابدأ بـ `768m` وارفعها عند زيادة الاتصالات المتزامنة.
 
 ## كيفية التشغيل
 
@@ -66,7 +124,7 @@ LAVALINK_MAX_RAM=256m npm run lavalink
 
 ### المتطلبات الأساسية
 
-*   **Node.js:** تأكد من تثبيت Node.js (الإصدار 16 أو أحدث موصى به).
+*   **Node.js:** تأكد من تثبيت Node.js 20 أو أحدث.
 *   **npm أو Yarn:** مدير حزم Node.js.
 *   **خادم Lavalink:** يجب أن يكون لديك خادم Lavalink قيد التشغيل. يمكنك العثور على إرشادات حول كيفية إعداد Lavalink في [وثائق Lavalink الرسمية](https://lavalink.dev/).
 *   **توكنات بوتات ديسكورد:** ستحتاج إلى توكنات لبوت التحكم الرئيسي وتوكنات إضافية للبوتات الموسيقية التي سيتم تخصيصها للمستخدمين.
