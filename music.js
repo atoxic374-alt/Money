@@ -273,7 +273,7 @@ module.exports = {
 
         let lastVCStatus = null;
 
-        TrueMusic.once('ready', async () => {
+        TrueMusic.once('clientReady', async () => {
             TrueMusic.poru.init(TrueMusic);
             collection.set(TrueMusic.user.id, TrueMusic);
 

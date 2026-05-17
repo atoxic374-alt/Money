@@ -47,7 +47,7 @@ module.exports = {
                     continue;
                 }
 
-                botClient.once('ready', async () => {
+                botClient.once('clientReady', async () => {
                     for (const guild of botClient.guilds.cache.values()) {
                         try {
                             await guild.leave();

@@ -1,4 +1,6 @@
 modules = ["nodejs-20", "nix"]
+run = "npm start"
+
 [agent]
 expertMode = true
 stack = "BEST_EFFORT_FALLBACK"
@@ -19,19 +21,7 @@ runButton = "Project"
 
 [[workflows.workflow]]
 name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Lavalink Server"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Start application"
-
-[[workflows.workflow]]
-name = "Lavalink Server"
+mode = "sequential"
 author = "agent"
 
 [workflows.workflow.metadata]
@@ -39,15 +29,4 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "java -Xmx2g -Xms512m -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=16m -XX:+UnlockExperimentalVMOptions -XX:+ParallelRefProcEnabled -XX:MaxMetaspaceSize=256m -XX:+OptimizeStringConcat -Djdk.tls.client.protocols=TLSv1.2,TLSv1.3 -jar Lavalink.jar"
-
-[[workflows.workflow]]
-name = "Start application"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "node index.js"
-
-[workflows.workflow.metadata]
-outputType = "console"
+args = "npm start"
