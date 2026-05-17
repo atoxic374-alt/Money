@@ -247,6 +247,20 @@ function removeStalePluginJars(pluginVersions) {
   }
 }
 
+function assertYouTubeAuthMode() {
+  const oauthEnabled = String(process.env.YOUTUBE_OAUTH_ENABLED || 'false').toLowerCase() === 'true';
+  const hasOauthRefreshToken = Boolean(process.env.YOUTUBE_OAUTH_REFRESH_TOKEN);
+  const hasPoToken = Boolean(process.env.YOUTUBE_POT_TOKEN || process.env.YOUTUBE_VISITOR_DATA);
+
+  if ((oauthEnabled || hasOauthRefreshToken) && hasPoToken) {
+    throw new Error('Use either YouTube OAuth or poToken/visitorData, not both. This keeps youtube-source behavior predictable.');
+  }
+
+  if (oauthEnabled && String(process.env.YOUTUBE_OAUTH_SKIP_INITIALIZATION || 'true').toLowerCase() === 'true' && !hasOauthRefreshToken) {
+    console.warn('[lavalink] YOUTUBE_OAUTH_ENABLED=true but no refresh token is set and initialization is skipped; OAuth will not become active until a token is supplied.');
+  }
+}
+
 function assertApplicationConfig() {
   const config = fs.readFileSync('application.yml', 'utf8');
   const bannedClients = ['ANDROID_MUSIC', 'ANDROID', 'IOS_MUSIC'];
@@ -280,6 +294,7 @@ async function resolveRuntimeVersions() {
 
 async function main() {
   assertJavaVersion();
+  assertYouTubeAuthMode();
   assertApplicationConfig();
 
   const { lavalinkVersion, pluginVersions } = await resolveRuntimeVersions();

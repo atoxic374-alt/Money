@@ -1,6 +1,6 @@
 server:
-  port: 2333
-  address: 0.0.0.0
+  port: ${SERVER_PORT:2333}
+  address: "${SERVER_ADDRESS:0.0.0.0}"
   http2:
     enabled: false
 
@@ -38,22 +38,22 @@ lavalink:
       channelMix: true
       lowPass: true
     nonAllocatingFrameBuffer: true
-    bufferDurationMs: 400
-    frameBufferDurationMs: 5000
-    opusEncodingQuality: 8
-    resamplingQuality: LOW
-    trackStuckThresholdMs: 10000
+    bufferDurationMs: ${LAVALINK_BUFFER_DURATION_MS:1000}
+    frameBufferDurationMs: ${LAVALINK_FRAME_BUFFER_DURATION_MS:5000}
+    opusEncodingQuality: ${LAVALINK_OPUS_QUALITY:10}
+    resamplingQuality: ${LAVALINK_RESAMPLING_QUALITY:MEDIUM}
+    trackStuckThresholdMs: ${LAVALINK_TRACK_STUCK_THRESHOLD_MS:10000}
     useSeekGhosting: true
-    youtubePlaylistLoadLimit: 6
-    playerUpdateInterval: 10
+    youtubePlaylistLoadLimit: ${YOUTUBE_PLAYLIST_LOAD_LIMIT:6}
+    playerUpdateInterval: ${LAVALINK_PLAYER_UPDATE_INTERVAL:10}
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
     soundcloudFilterOutPreviewTracks: true
     gc-warnings: true
     timeouts:
-      connectTimeoutMs: 5000
-      connectionRequestTimeoutMs: 5000
-      socketTimeoutMs: 10000
+      connectTimeoutMs: ${LAVALINK_CONNECT_TIMEOUT_MS:5000}
+      connectionRequestTimeoutMs: ${LAVALINK_CONNECTION_REQUEST_TIMEOUT_MS:5000}
+      socketTimeoutMs: ${LAVALINK_SOCKET_TIMEOUT_MS:10000}
 
 plugins:
   youtube:
@@ -131,8 +131,8 @@ plugins:
 
 metrics:
   prometheus:
-    enabled: false
-    endpoint: /metrics
+    enabled: ${LAVALINK_PROMETHEUS_ENABLED:false}
+    endpoint: ${LAVALINK_PROMETHEUS_ENDPOINT:/metrics}
 
 sentry:
   dsn: ""
