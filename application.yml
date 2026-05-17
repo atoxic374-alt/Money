@@ -89,18 +89,18 @@ lavalink:
       channelMix: true
       lowPass: true
     # ── إعدادات الأداء والاستقرار ─────────────────────────────────────────
-    bufferDurationMs: 600           # بافر أكبر لمقاومة التأخير
+    bufferDurationMs: 400           # بافر متوازن — 600 يضيف latency غير ضروري
     frameBufferDurationMs: 10000    # 10 ثوانٍ بافر للحماية من انقطاع YouTube
     opusEncodingQuality: 10         # أعلى جودة ترميز Opus (0-10)
     resamplingQuality: HIGH         # أعلى جودة إعادة المعاينة
     trackStuckThresholdMs: 10000    # 10 ثوانٍ قبل اعتبار الأغنية متوقفة
     useSeekGhosting: true           # تجنب القفزات أثناء التخطي
     youtubePlaylistLoadLimit: 100   # تحميل حتى 100 بلايلست
-    playerUpdateInterval: 5         # تحديث موضع التشغيل كل 5 ثوانٍ
+    playerUpdateInterval: 15        # 15 ثانية — تقليل الضغط عند 1000+ player
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
     gc-warnings: true
-    nonAllocatingFrameBuffer: true  # أداء أفضل للذاكرة (لا تخصيص ديناميكي)
+    nonAllocatingFrameBuffer: true  # أداء أفضل للذاكرة — لا تخصيص ديناميكي (ضروري لـ 1000+ بوت)
 
 metrics:
   prometheus:

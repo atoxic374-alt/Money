@@ -39,7 +39,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "java -Xmx512m -Xms128m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -Djdk.tls.client.protocols=TLSv1.2,TLSv1.3 -jar Lavalink.jar"
+args = "java -Xmx2g -Xms512m -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=16m -XX:+UnlockExperimentalVMOptions -XX:+ParallelRefProcEnabled -XX:MaxMetaspaceSize=256m -XX:+OptimizeStringConcat -Djdk.tls.client.protocols=TLSv1.2,TLSv1.3 -jar Lavalink.jar"
 
 [[workflows.workflow]]
 name = "Start application"

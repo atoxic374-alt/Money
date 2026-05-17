@@ -1,4 +1,5 @@
-require('events').EventEmitter.defaultMaxListeners = 30;
+// 0 = بلا حد — ضروري عند تشغيل 1000+ بوت (كل بوت يضيف عشرات الـ listeners)
+require('events').EventEmitter.defaultMaxListeners = 0;
 
 
 const {
@@ -88,12 +89,12 @@ module.exports = {
 
         TrueMusic.poru = new Poru(TrueMusic, hostConfig, {
             defaultPlatform: 'ytsearch',
-            reconnectTries: 20,
-            reconnectTimeout: 3000,
+            reconnectTries: 30,           // زيادة المحاولات لضمان الاسترداد تحت الضغط
+            reconnectTimeout: 8000,       // 8 ثوانٍ بدلاً من 3 — يمنع reconnect storms
             library: 'discord.js',
-            autoResume: false,
+            autoResume: true,             // استئناف تلقائي بعد قطع الاتصال
             resumeKey: `poru-${idbot}`,
-            resumeTimeout: 60,
+            resumeTimeout: 120,           // دقيقتان لإعادة الاتصال قبل إلغاء الجلسة
         });
 
         const patchPoruRestJson = (node) => {
@@ -283,6 +284,8 @@ module.exports = {
                 }
             });
 
+            // ── تحسين الأداء: 30 ثانية بدلاً من 5 ────────────────────────────────
+            // عند 1000 بوت: 5s = 200 استدعاء/ثانية → 30s = 33 استدعاء/ثانية فقط
             let int = setInterval(async () => {
                 if (!TrueMusic.readyAt) return;
 
@@ -356,22 +359,21 @@ module.exports = {
                     const currentStatus = TrueMusic.user.presence?.activities[0]?.name;
                     const newStatus = tokenObj.status || statuses;
 
-             if (currentStatus !== newStatus) {
-  TrueMusic.user.setPresence({
-    activities: [
-      {
-        name: String(newStatus || "Sway Music"),
-        type: ActivityType.Streaming,
-        url: Array.isArray(TwitchUrl) ? TwitchUrl[0] : TwitchUrl,
-      },
-    ],
-    status: 'online',
-  });
-}
-
+                    if (currentStatus !== newStatus) {
+                        TrueMusic.user.setPresence({
+                            activities: [
+                                {
+                                    name: String(newStatus || "Sway Music"),
+                                    type: ActivityType.Streaming,
+                                    url: Array.isArray(TwitchUrl) ? TwitchUrl[0] : TwitchUrl,
+                                },
+                            ],
+                            status: 'online',
+                        });
+                    }
                 }
 
-            }, 5000);
+            }, 30_000); // 30 ثانية — الفاصل الأمثل عند 1000+ بوت
         });
 
 
